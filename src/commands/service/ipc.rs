@@ -1447,12 +1447,11 @@ pub fn create_chat_in_graph(
 
     let config = workgraph::config::Config::load_or_default(dir);
     let max = config.coordinator.max_coordinators;
-    let alive = graph
-        .tasks()
-        .filter(|t| t.tags.iter().any(|tag| workgraph::chat_id::is_chat_loop_tag(tag)))
-        .filter(|t| !matches!(t.status, workgraph::graph::Status::Abandoned))
-        .filter(|t| !t.tags.iter().any(|tag| tag == "archived"))
-        .count();
+    let alive = workgraph::chat::count_live_chats(
+        dir,
+        &graph,
+        workgraph::chat::CHAT_CAP_IDLE_THRESHOLD,
+    );
     if alive >= max {
         anyhow::bail!("Chat cap reached ({}/{})", alive, max);
     }
@@ -3055,6 +3054,90 @@ poll_interval = 120
         let data = resp.data.unwrap();
         assert!(data["purged"].as_array().unwrap().is_empty());
         assert!(data["skipped"].as_array().unwrap().is_empty());
+    }
+
+    /// Cap regression (parent task fix-chat-cap): `create_chat_in_graph`
+    /// must use `count_live_chats`, not raw chat-loop count. With 4 chats
+    /// of which 2 are archived, the cap reads 2/4 — and the user can
+    /// still create a 3rd chat. Before the fix, archived-but-not-Done
+    /// chats inflated the count and the user saw "4/4 with only 2
+    /// visible tabs".
+    #[test]
+    fn test_create_chat_in_graph_excludes_archived_from_cap() {
+        use workgraph::chat_id::CHAT_LOOP_TAG;
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+
+        // Pre-load graph with 2 active chats and 2 archived chats —
+        // total 4 chat-loop-tagged tasks, but only 2 occupy slots.
+        let now = chrono::Utc::now().to_rfc3339();
+        let mut graph = workgraph::graph::WorkGraph::new();
+        for (i, archived) in [(0u32, false), (1, false), (2, true), (3, true)] {
+            let mut tags = vec![CHAT_LOOP_TAG.to_string()];
+            if archived {
+                tags.push("archived".to_string());
+            }
+            graph.add_node(workgraph::graph::Node::Task(workgraph::graph::Task {
+                id: workgraph::chat_id::format_chat_task_id(i),
+                title: format!("Chat {}", i),
+                status: workgraph::graph::Status::InProgress,
+                tags,
+                created_at: Some(now.clone()),
+                ..Default::default()
+            }));
+        }
+        workgraph::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+
+        // Default max_coordinators is 4. We have 2 live + 2 archived =
+        // 2/4 — creation must succeed (fresh chat 4 lands).
+        let new_id =
+            create_chat_in_graph(dir, Some("New One"), None, None).expect("cap not reached");
+        assert!(
+            new_id >= 4,
+            "new chat id should be at least 4 (after .chat-3), got {}",
+            new_id
+        );
+    }
+
+    /// Cap regression (parent task fix-chat-cap): a `.chat-N` task whose
+    /// supervisor is dead and whose consumer cursor has gone away (the
+    /// "zombie" case from the bug report) must not block new chats. The
+    /// freshness window in `count_live_chats` excludes old chats with no
+    /// cursor and no inbox traffic — supervisor's no-respawn rule and
+    /// the cap counter agree on what's live.
+    #[test]
+    fn test_create_chat_in_graph_zombie_supervisors_do_not_block() {
+        use workgraph::chat_id::CHAT_LOOP_TAG;
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+
+        // 4 chat-loop-tagged InProgress tasks, all created an hour ago,
+        // none archived, no cursor files, no inbox traffic. Supervisor
+        // would treat them all as idle and exit. Cap counter should
+        // therefore see 0 live, allowing a new chat to land.
+        let stale = (chrono::Utc::now() - chrono::Duration::seconds(3600)).to_rfc3339();
+        let mut graph = workgraph::graph::WorkGraph::new();
+        for i in 0u32..4 {
+            graph.add_node(workgraph::graph::Node::Task(workgraph::graph::Task {
+                id: workgraph::chat_id::format_chat_task_id(i),
+                title: format!("Chat {}", i),
+                status: workgraph::graph::Status::InProgress,
+                tags: vec![CHAT_LOOP_TAG.to_string()],
+                created_at: Some(stale.clone()),
+                ..Default::default()
+            }));
+        }
+        workgraph::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+
+        // 4 zombies + cap of 4 = pre-fix would bail with "Chat cap
+        // reached (4/4)". Post-fix the zombies don't count and creation
+        // succeeds.
+        let result = create_chat_in_graph(dir, None, None, None);
+        assert!(
+            result.is_ok(),
+            "zombie supervisors must not block new chats; got: {:?}",
+            result.err()
+        );
     }
 
     /// PurgeChats marks chats with the `archived` tag, which means

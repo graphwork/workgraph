@@ -12821,7 +12821,7 @@ impl VizApp {
 
         let config = Config::load_or_default(&self.workgraph_dir);
         let max = config.coordinator.max_coordinators;
-        let alive = self.list_coordinator_ids_and_labels().len();
+        let alive = self.live_chat_count();
         if alive >= max {
             self.push_toast(
                 format!("Chat cap reached ({}/{})", alive, max),
@@ -12894,7 +12894,7 @@ impl VizApp {
 
         let config = Config::load_or_default(&self.workgraph_dir);
         let max = config.coordinator.max_coordinators;
-        let alive = self.list_coordinator_ids_and_labels().len();
+        let alive = self.live_chat_count();
         if alive >= max {
             self.push_toast(
                 format!("Chat cap reached ({}/{})", alive, max),
@@ -12957,7 +12957,7 @@ impl VizApp {
     pub fn create_coordinator_with_defaults(&mut self) {
         let config = Config::load_or_default(&self.workgraph_dir);
         let max = config.coordinator.max_coordinators;
-        let alive = self.list_coordinator_ids_and_labels().len();
+        let alive = self.live_chat_count();
         if alive >= max {
             self.push_toast(
                 format!("Chat cap reached ({}/{})", alive, max),
@@ -13050,6 +13050,26 @@ impl VizApp {
             .into_iter()
             .map(|(id, _)| id)
             .collect()
+    }
+
+    /// Count chats that occupy a slot toward `coordinator.max_coordinators`.
+    ///
+    /// Distinct from `list_coordinator_ids_and_labels().len()`: this filters
+    /// out zombie supervisors (handler dead + consumer absent) and Done /
+    /// Abandoned / archived tasks, matching the IPC `CreateChat` cap check.
+    /// Returns 0 on a missing graph file rather than synthesizing a phantom
+    /// chat-0 entry — empty graph means zero live chats.
+    pub fn live_chat_count(&self) -> usize {
+        let graph_path = self.workgraph_dir.join("graph.jsonl");
+        let graph = match workgraph::parser::load_graph(&graph_path) {
+            Ok(g) => g,
+            Err(_) => return 0,
+        };
+        workgraph::chat::count_live_chats(
+            &self.workgraph_dir,
+            &graph,
+            workgraph::chat::CHAT_CAP_IDLE_THRESHOLD,
+        )
     }
 
     /// Get coordinator IDs with display labels from the graph.

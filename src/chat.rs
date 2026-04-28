@@ -824,6 +824,105 @@ pub fn chat_session_is_idle(
     !consumer_recent
 }
 
+/// True when this chat task should count toward the
+/// `coordinator.max_coordinators` cap.
+///
+/// Caller is expected to have already filtered out tasks that obviously
+/// don't count: missing chat-loop tag, status `Abandoned`/`Done`, or the
+/// `archived` tag. This function answers the additional question — is the
+/// chat *live enough* to occupy a slot?
+///
+/// A chat counts when **either**:
+///
+/// 1. It was created within `idle_threshold` (fresh chats with no consumer
+///    cursor yet still occupy a slot — handles the IPC create -> consumer
+///    attach window, where `chat_session_is_idle` would otherwise report
+///    "idle" because no cursor file exists yet).
+/// 2. `chat_session_is_idle` returns `false` — i.e. either the inbox has
+///    unread messages, or the consumer cursor was touched within
+///    `idle_threshold`.
+///
+/// Otherwise the chat is a zombie: handler dead, consumer absent, no work
+/// pending. The chat supervisor uses the same idle definition to decide
+/// whether to respawn handlers, so the cap stays aligned with what the
+/// daemon considers worth running.
+pub fn chat_occupies_cap_slot(
+    workgraph_dir: &Path,
+    chat_id: u32,
+    created_at_rfc3339: Option<&str>,
+    idle_threshold: Duration,
+) -> bool {
+    if let Some(s) = created_at_rfc3339
+        && let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s)
+    {
+        let now = chrono::Utc::now();
+        let age = now.signed_duration_since(dt.with_timezone(&chrono::Utc));
+        // Negative age (clock skew) → treat as fresh; positive age within
+        // threshold → fresh.
+        if age.num_seconds() < 0
+            || (age.num_seconds() as u64) < idle_threshold.as_secs()
+        {
+            return true;
+        }
+    }
+    !chat_session_is_idle(workgraph_dir, chat_id, idle_threshold)
+}
+
+/// Default idle threshold for the chat cap counter.
+///
+/// A chat with no consumer cursor activity and no unread inbox for longer
+/// than this is considered a zombie and excluded from the cap. Mirrors the
+/// supervisor's `CHAT_IDLE_THRESHOLD_SECS` so the two stay in sync — once
+/// the supervisor exits cleanly for an idle chat, that same chat stops
+/// counting against the cap, freeing a slot for the user.
+pub const CHAT_CAP_IDLE_THRESHOLD: Duration = Duration::from_secs(300);
+
+/// Count chat tasks that occupy a slot toward `coordinator.max_coordinators`.
+///
+/// Filters apply in this order:
+///   1. Has chat-loop or legacy coordinator-loop tag.
+///   2. Status is not `Abandoned` and not `Done`.
+///   3. Not tagged `archived`.
+///   4. Task ID parses as `.chat-N`, `.coordinator-N`, or bare `.coordinator`
+///      (legacy chat-id 0).
+///   5. `chat_occupies_cap_slot` returns true (fresh OR has live session).
+///
+/// (4) and (5) are tighter than the boot-enumeration filter
+/// (`enumerate_chat_supervisors_from_graph`): they exclude tasks whose
+/// supervisor would not respawn a handler anyway. This keeps the cap in
+/// sync with the user's working set rather than ballooning when zombie
+/// supervisors hang around in the graph after a daemon restart.
+pub fn count_live_chats(
+    workgraph_dir: &Path,
+    graph: &crate::graph::WorkGraph,
+    idle_threshold: Duration,
+) -> usize {
+    graph
+        .tasks()
+        .filter(|t| t.tags.iter().any(|tag| crate::chat_id::is_chat_loop_tag(tag)))
+        .filter(|t| {
+            !matches!(
+                t.status,
+                crate::graph::Status::Abandoned | crate::graph::Status::Done
+            )
+        })
+        .filter(|t| !t.tags.iter().any(|tag| tag == "archived"))
+        .filter(|t| {
+            let chat_id = match crate::chat_id::parse_chat_task_id(&t.id) {
+                Some(id) => id,
+                None if t.id == ".coordinator" => 0,
+                None => return false,
+            };
+            chat_occupies_cap_slot(
+                workgraph_dir,
+                chat_id,
+                t.created_at.as_deref(),
+                idle_threshold,
+            )
+        })
+        .count()
+}
+
 /// Rotate old chat history (coordinator 0).
 pub fn rotate_history(workgraph_dir: &Path, keep_count: usize) -> Result<()> {
     rotate_history_for(workgraph_dir, 0, keep_count)
@@ -3569,5 +3668,370 @@ mod tests {
         append_inbox_for(&wg_dir, 0, "hi", "req-1").unwrap();
         assert!(!chat_session_is_idle(&wg_dir, 0, Duration::from_secs(60)));
         assert!(chat_session_is_idle(&wg_dir, 1, Duration::from_secs(60)));
+    }
+
+    // ---- count_live_chats / chat_occupies_cap_slot ----
+
+    use crate::chat_id::CHAT_LOOP_TAG;
+    use crate::graph::{Node, Status, Task, WorkGraph};
+
+    fn chat_task(id: &str, status: Status, archived: bool, created_at: Option<&str>) -> Task {
+        let mut tags = vec![CHAT_LOOP_TAG.to_string()];
+        if archived {
+            tags.push("archived".to_string());
+        }
+        Task {
+            id: id.to_string(),
+            title: id.to_string(),
+            status,
+            tags,
+            created_at: created_at.map(str::to_string),
+            ..Default::default()
+        }
+    }
+
+    /// Helper: backdate a file's mtime by `secs` seconds via libc::utimes.
+    /// Used to simulate stale consumer cursors in tests.
+    #[cfg(unix)]
+    fn backdate(path: &Path, secs: i64) {
+        let cstr = std::ffi::CString::new(path.to_string_lossy().as_bytes()).unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as libc::time_t;
+        let backdated = now - secs as libc::time_t;
+        let times = [
+            libc::timeval {
+                tv_sec: backdated,
+                tv_usec: 0,
+            },
+            libc::timeval {
+                tv_sec: backdated,
+                tv_usec: 0,
+            },
+        ];
+        let rc = unsafe { libc::utimes(cstr.as_ptr(), times.as_ptr()) };
+        assert_eq!(rc, 0, "utimes should succeed");
+    }
+
+    /// Cap slot rule: a freshly-created chat occupies a slot even before
+    /// any consumer has attached its cursor file. Without this carve-out,
+    /// the IPC create path would race with the consumer-attach window and
+    /// `chat_session_is_idle` would briefly return true (no cursor, no
+    /// inbox) for a chat the user just spawned.
+    #[test]
+    fn test_chat_occupies_cap_slot_fresh_chat_counts() {
+        let (_tmp, wg_dir) = setup();
+        let now = chrono::Utc::now().to_rfc3339();
+        // No cursor file, no inbox — but `created_at` is fresh.
+        assert!(chat_occupies_cap_slot(
+            &wg_dir,
+            0,
+            Some(&now),
+            Duration::from_secs(60),
+        ));
+    }
+
+    /// Cap slot rule: an old chat with no consumer cursor and no unread
+    /// inbox is a zombie — the supervisor exits per the no-respawn rule,
+    /// so it should not block the user from creating a new chat.
+    #[test]
+    fn test_chat_occupies_cap_slot_zombie_does_not_count() {
+        let (_tmp, wg_dir) = setup();
+        let old =
+            (chrono::Utc::now() - chrono::Duration::seconds(3600)).to_rfc3339();
+        // Created an hour ago, no cursor, no inbox → zombie.
+        assert!(!chat_occupies_cap_slot(
+            &wg_dir,
+            0,
+            Some(&old),
+            Duration::from_secs(60),
+        ));
+    }
+
+    /// Cap slot rule: a chat with pending inbox messages always counts,
+    /// even if the consumer cursor is stale or missing (the handler still
+    /// has work to do).
+    #[test]
+    fn test_chat_occupies_cap_slot_pending_inbox_counts() {
+        let (_tmp, wg_dir) = setup();
+        append_inbox_for(&wg_dir, 0, "hi", "req-1").unwrap();
+        let old =
+            (chrono::Utc::now() - chrono::Duration::seconds(3600)).to_rfc3339();
+        assert!(chat_occupies_cap_slot(
+            &wg_dir,
+            0,
+            Some(&old),
+            Duration::from_secs(60),
+        ));
+    }
+
+    /// Cap slot rule: an old chat with a recently-touched consumer cursor
+    /// (TUI tab still attached) counts even after the freshness window
+    /// has expired.
+    #[test]
+    fn test_chat_occupies_cap_slot_recent_cursor_counts() {
+        let (_tmp, wg_dir) = setup();
+        let old =
+            (chrono::Utc::now() - chrono::Duration::seconds(3600)).to_rfc3339();
+        write_cursor_for(&wg_dir, 0, 0).unwrap();
+        assert!(chat_occupies_cap_slot(
+            &wg_dir,
+            0,
+            Some(&old),
+            Duration::from_secs(60),
+        ));
+    }
+
+    /// Validation criterion 1: with 4 chat-loop tasks where 2 carry the
+    /// `archived` tag, the live count is 2 — not 4. The archived chats
+    /// have been purged and must not block the user from creating new
+    /// ones.
+    #[test]
+    fn test_count_live_chats_excludes_archived() {
+        let (_tmp, wg_dir) = setup();
+        let now = chrono::Utc::now().to_rfc3339();
+        let mut g = WorkGraph::new();
+        g.add_node(Node::Task(chat_task(
+            ".chat-0",
+            Status::InProgress,
+            false,
+            Some(&now),
+        )));
+        g.add_node(Node::Task(chat_task(
+            ".chat-1",
+            Status::InProgress,
+            false,
+            Some(&now),
+        )));
+        g.add_node(Node::Task(chat_task(
+            ".chat-2",
+            Status::InProgress,
+            true, // archived
+            Some(&now),
+        )));
+        g.add_node(Node::Task(chat_task(
+            ".chat-3",
+            Status::Done,
+            true, // archived
+            Some(&now),
+        )));
+        assert_eq!(count_live_chats(&wg_dir, &g, Duration::from_secs(60)), 2);
+    }
+
+    /// Validation criterion 2: a "zombie supervisor" — a `.chat-N` task
+    /// that's been in the graph long enough to exhaust the freshness
+    /// window, with no cursor file (handler dead, consumer absent) — must
+    /// NOT contribute to the cap. This is the regression test for the
+    /// "4/4 with only 2 visible tabs" symptom: when the dispatcher
+    /// restarts and supervisors fail to attach a consumer, those slots
+    /// must be reclaimed automatically.
+    #[test]
+    fn test_count_live_chats_excludes_zombie_supervisor() {
+        let (_tmp, wg_dir) = setup();
+        let old =
+            (chrono::Utc::now() - chrono::Duration::seconds(3600)).to_rfc3339();
+        let now = chrono::Utc::now().to_rfc3339();
+        let mut g = WorkGraph::new();
+        // Two zombies: old, no cursor, no inbox.
+        g.add_node(Node::Task(chat_task(
+            ".chat-0",
+            Status::InProgress,
+            false,
+            Some(&old),
+        )));
+        g.add_node(Node::Task(chat_task(
+            ".chat-1",
+            Status::InProgress,
+            false,
+            Some(&old),
+        )));
+        // Two live: fresh — created moments ago, still inside the
+        // freshness grace window.
+        g.add_node(Node::Task(chat_task(
+            ".chat-2",
+            Status::InProgress,
+            false,
+            Some(&now),
+        )));
+        g.add_node(Node::Task(chat_task(
+            ".chat-3",
+            Status::InProgress,
+            false,
+            Some(&now),
+        )));
+        // Cap counter sees: 2 fresh + 0 active-with-cursor = 2 live.
+        assert_eq!(count_live_chats(&wg_dir, &g, Duration::from_secs(60)), 2);
+    }
+
+    /// `Done` status must not contribute to the cap. A user could
+    /// `wg done .chat-N` a chat directly without going through purge —
+    /// the chat is still in the graph but should not block new chats.
+    /// Mirrors `enumerate_chat_supervisors_from_graph`'s exclusion of
+    /// Done.
+    #[test]
+    fn test_count_live_chats_excludes_done_status() {
+        let (_tmp, wg_dir) = setup();
+        let now = chrono::Utc::now().to_rfc3339();
+        let mut g = WorkGraph::new();
+        g.add_node(Node::Task(chat_task(
+            ".chat-0",
+            Status::Done,
+            false,
+            Some(&now),
+        )));
+        assert_eq!(count_live_chats(&wg_dir, &g, Duration::from_secs(60)), 0);
+    }
+
+    /// `Abandoned` status — same idea as Done.
+    #[test]
+    fn test_count_live_chats_excludes_abandoned_status() {
+        let (_tmp, wg_dir) = setup();
+        let now = chrono::Utc::now().to_rfc3339();
+        let mut g = WorkGraph::new();
+        g.add_node(Node::Task(chat_task(
+            ".chat-0",
+            Status::Abandoned,
+            false,
+            Some(&now),
+        )));
+        assert_eq!(count_live_chats(&wg_dir, &g, Duration::from_secs(60)), 0);
+    }
+
+    /// A chat with a recently-touched consumer cursor (TUI tab attached)
+    /// counts toward the cap even if it was created long ago — the user
+    /// is actively using it.
+    #[cfg(unix)]
+    #[test]
+    fn test_count_live_chats_includes_old_chat_with_recent_cursor() {
+        let (_tmp, wg_dir) = setup();
+        let old =
+            (chrono::Utc::now() - chrono::Duration::seconds(3600)).to_rfc3339();
+        let mut g = WorkGraph::new();
+        g.add_node(Node::Task(chat_task(
+            ".chat-0",
+            Status::InProgress,
+            false,
+            Some(&old),
+        )));
+        // Cursor brand-new → consumer attached → counts.
+        write_cursor_for(&wg_dir, 0, 0).unwrap();
+        assert_eq!(count_live_chats(&wg_dir, &g, Duration::from_secs(60)), 1);
+    }
+
+    /// A chat whose consumer has been gone longer than the idle threshold
+    /// is treated as a zombie and excluded — even if cursor file exists.
+    #[cfg(unix)]
+    #[test]
+    fn test_count_live_chats_excludes_old_chat_with_stale_cursor() {
+        let (_tmp, wg_dir) = setup();
+        let old =
+            (chrono::Utc::now() - chrono::Duration::seconds(3600)).to_rfc3339();
+        let mut g = WorkGraph::new();
+        g.add_node(Node::Task(chat_task(
+            ".chat-0",
+            Status::InProgress,
+            false,
+            Some(&old),
+        )));
+        write_cursor_for(&wg_dir, 0, 0).unwrap();
+        backdate(&cursor_path_for(&wg_dir, 0), 600);
+        // Cursor 10 minutes old > 60s threshold → zombie.
+        assert_eq!(count_live_chats(&wg_dir, &g, Duration::from_secs(60)), 0);
+    }
+
+    /// Mixed graph: archived + abandoned + done + zombie + fresh + active.
+    /// Only the fresh and active ones count.
+    #[cfg(unix)]
+    #[test]
+    fn test_count_live_chats_mixed_graph() {
+        let (_tmp, wg_dir) = setup();
+        let old =
+            (chrono::Utc::now() - chrono::Duration::seconds(3600)).to_rfc3339();
+        let now = chrono::Utc::now().to_rfc3339();
+        let mut g = WorkGraph::new();
+        // Archived — excluded.
+        g.add_node(Node::Task(chat_task(
+            ".chat-0",
+            Status::InProgress,
+            true,
+            Some(&now),
+        )));
+        // Abandoned — excluded.
+        g.add_node(Node::Task(chat_task(
+            ".chat-1",
+            Status::Abandoned,
+            false,
+            Some(&now),
+        )));
+        // Done — excluded.
+        g.add_node(Node::Task(chat_task(
+            ".chat-2",
+            Status::Done,
+            false,
+            Some(&now),
+        )));
+        // Zombie (old, no cursor) — excluded.
+        g.add_node(Node::Task(chat_task(
+            ".chat-3",
+            Status::InProgress,
+            false,
+            Some(&old),
+        )));
+        // Fresh — counts.
+        g.add_node(Node::Task(chat_task(
+            ".chat-4",
+            Status::InProgress,
+            false,
+            Some(&now),
+        )));
+        // Old with active cursor — counts.
+        g.add_node(Node::Task(chat_task(
+            ".chat-5",
+            Status::InProgress,
+            false,
+            Some(&old),
+        )));
+        write_cursor_for(&wg_dir, 5, 0).unwrap();
+        // Non-chat task — ignored.
+        g.add_node(Node::Task(Task {
+            id: "regular-work".to_string(),
+            title: "regular".to_string(),
+            status: Status::InProgress,
+            ..Default::default()
+        }));
+        assert_eq!(count_live_chats(&wg_dir, &g, Duration::from_secs(60)), 2);
+    }
+
+    /// Tasks with the chat-loop tag but unparseable IDs are ignored — the
+    /// cap-counter shouldn't panic on malformed graph data.
+    #[test]
+    fn test_count_live_chats_ignores_unparseable_chat_id() {
+        let (_tmp, wg_dir) = setup();
+        let now = chrono::Utc::now().to_rfc3339();
+        let mut g = WorkGraph::new();
+        g.add_node(Node::Task(chat_task(
+            "not-a-chat-id",
+            Status::InProgress,
+            false,
+            Some(&now),
+        )));
+        assert_eq!(count_live_chats(&wg_dir, &g, Duration::from_secs(60)), 0);
+    }
+
+    /// Legacy bare `.coordinator` ID maps to chat-id 0 — older graphs may
+    /// still have this single bare-prefix task.
+    #[test]
+    fn test_count_live_chats_handles_legacy_bare_coordinator() {
+        let (_tmp, wg_dir) = setup();
+        let now = chrono::Utc::now().to_rfc3339();
+        let mut g = WorkGraph::new();
+        g.add_node(Node::Task(chat_task(
+            ".coordinator",
+            Status::InProgress,
+            false,
+            Some(&now),
+        )));
+        assert_eq!(count_live_chats(&wg_dir, &g, Duration::from_secs(60)), 1);
     }
 }
