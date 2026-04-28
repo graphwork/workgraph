@@ -21,7 +21,7 @@ to update the global binary. Forgetting this step is a common source of "why isn
 Pick a **(model, endpoint)** pair — wg derives the handler from the model spec's provider prefix:
 
 - `wg config -m claude:opus` → claude CLI handler (no endpoint needed; CLI auths itself)
-- `wg config -m codex:gpt-5` → codex CLI handler (no endpoint needed)
+- `wg config -m codex:gpt-5.4` → codex CLI handler (no endpoint needed)
 - `wg config -m local:qwen3-coder -e http://127.0.0.1:8088` → in-process nex handler
 - `wg config -m openrouter:anthropic/claude-opus-4-7` → in-process nex handler
 

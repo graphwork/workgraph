@@ -266,28 +266,37 @@ fn codex_cli_config(params: &RouteParams) -> Config {
 
     config.llm_endpoints = EndpointsConfig::default();
 
-    // Model registry: codex CLI accepts these as of 2026-04 — gpt-5-mini,
-    // gpt-5, o1-pro per task description.
+    // Model registry: verified codex CLI model strings as of 2026-04-28.
+    // gpt-5.4 is the CLI's own default (v0.124.0). gpt-5.4-mini is the
+    // recommended subagent model. gpt-5.5 is the new frontier (2026-04-23).
     config.model_registry = codex_default_registry();
 
+    // Tiers: haiku≈gpt-5.4-mini, sonnet≈gpt-5.4, opus≈gpt-5.5.
+    // o1-pro is on the deprecation path (shutdown 2026-10-23).
     config.tiers = TierConfig {
-        fast: Some("codex:gpt-5-mini".to_string()),
-        standard: Some("codex:gpt-5".to_string()),
-        premium: Some("codex:o1-pro".to_string()),
+        fast: Some("codex:gpt-5.4-mini".to_string()),
+        standard: Some("codex:gpt-5.4".to_string()),
+        premium: Some("codex:gpt-5.5".to_string()),
     };
 
-    // Worker default: codex:o1-pro (premium tier). User --model overrides.
+    // Worker default: codex:gpt-5.4 (balanced/sonnet-equivalent). The
+    // codex CLI's own default as of v0.124.0. User --model overrides.
     let agent_model = params
         .model
         .clone()
-        .unwrap_or_else(|| "codex:o1-pro".to_string());
+        .unwrap_or_else(|| "codex:gpt-5.4".to_string());
     let agent_model = ensure_provider_prefix(&agent_model, "codex");
     config.agent.model = agent_model.clone();
     config.coordinator.model = Some(agent_model.clone());
 
-    // Eval / assign default to the cheap tier (gpt-5-mini).
-    config.models =
-        split_role_models_routing(&agent_model, "codex:gpt-5-mini", "codex:gpt-5-mini");
+    // Eval / assign default to gpt-5.4-mini (cheap/haiku-equivalent).
+    // Agency meta-tasks (evaluate, FLIP, assign) need only short structured
+    // outputs — the mini model is sufficient and ~3x cheaper than gpt-5.4.
+    config.models = split_role_models_routing(
+        &agent_model,
+        "codex:gpt-5.4-mini",
+        "codex:gpt-5.4-mini",
+    );
 
     config
 }
@@ -447,23 +456,27 @@ fn openrouter_default_registry() -> Vec<ModelRegistryEntry> {
 fn codex_default_registry() -> Vec<ModelRegistryEntry> {
     vec![
         ModelRegistryEntry {
-            id: "gpt-5-mini".to_string(),
+            id: "gpt-5.4-mini".to_string(),
             provider: "codex".to_string(),
-            model: "gpt-5-mini".to_string(),
+            model: "gpt-5.4-mini".to_string(),
             tier: Tier::Fast,
+            context_window: 1_000_000,
+            max_output_tokens: 128_000,
             ..Default::default()
         },
         ModelRegistryEntry {
-            id: "gpt-5".to_string(),
+            id: "gpt-5.4".to_string(),
             provider: "codex".to_string(),
-            model: "gpt-5".to_string(),
+            model: "gpt-5.4".to_string(),
             tier: Tier::Standard,
+            context_window: 1_000_000,
+            max_output_tokens: 128_000,
             ..Default::default()
         },
         ModelRegistryEntry {
-            id: "o1-pro".to_string(),
+            id: "gpt-5.5".to_string(),
             provider: "codex".to_string(),
-            model: "o1-pro".to_string(),
+            model: "gpt-5.5".to_string(),
             tier: Tier::Premium,
             ..Default::default()
         },
@@ -706,20 +719,20 @@ mod tests {
     fn test_route_codex_cli_role_split() {
         let config = config_for_route(SetupRoute::CodexCli, RouteParams::default());
         assert_eq!(
-            config.agent.model, "codex:o1-pro",
-            "codex-cli agent should default to o1-pro (premium)"
+            config.agent.model, "codex:gpt-5.4",
+            "codex-cli agent should default to gpt-5.4 (balanced/sonnet-equivalent)"
         );
         let evaluator = config.models.evaluator.as_ref().unwrap();
         assert_eq!(
             evaluator.model.as_deref(),
-            Some("codex:gpt-5-mini"),
-            "codex-cli evaluator should default to gpt-5-mini (cheap)"
+            Some("codex:gpt-5.4-mini"),
+            "codex-cli evaluator should default to gpt-5.4-mini (cheap/haiku-equivalent)"
         );
         let assigner = config.models.assigner.as_ref().unwrap();
         assert_eq!(
             assigner.model.as_deref(),
-            Some("codex:gpt-5-mini"),
-            "codex-cli assigner should default to gpt-5-mini (cheap)"
+            Some("codex:gpt-5.4-mini"),
+            "codex-cli assigner should default to gpt-5.4-mini (cheap/haiku-equivalent)"
         );
     }
 
@@ -794,9 +807,9 @@ mod tests {
 
         assert_tiers_filled(&config);
 
-        // Default = premium tier model = codex:o1-pro (worker runs premium for real implementation).
-        assert_eq!(config.agent.model, "codex:o1-pro");
-        assert_eq!(config.coordinator.model.as_deref(), Some("codex:o1-pro"));
+        // Default = balanced tier model = codex:gpt-5.4 (sonnet-equivalent).
+        assert_eq!(config.agent.model, "codex:gpt-5.4");
+        assert_eq!(config.coordinator.model.as_deref(), Some("codex:gpt-5.4"));
 
         assert_models_evaluator_and_assigner_pinned(&config);
 

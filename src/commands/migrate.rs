@@ -775,6 +775,16 @@ const STALE_MODEL_REWRITES: &[(&str, &str)] = &[
         "anthropic/claude-opus-4",
         "anthropic/claude-opus-4-7",
     ),
+    // Codex / OpenAI model rewrites (2026-04-28):
+    // o1-pro deprecated 2026-10-23; gpt-5.4 is the new balanced default.
+    ("codex:o1-pro", "codex:gpt-5.4"),
+    // Old tier names predating the gpt-5.4 generation.
+    ("codex:gpt-5-mini", "codex:gpt-5.4-mini"),
+    ("codex:gpt-5", "codex:gpt-5.4"),
+    // gpt-5-codex sunsets 2026-07-23; gpt-5.4 is the direct replacement.
+    ("codex:gpt-5-codex", "codex:gpt-5.4"),
+    // gpt-5.4-pro superseded by gpt-5.5 (newer, cheaper at $5/$30 vs $30/$180).
+    ("codex:gpt-5.4-pro", "codex:gpt-5.5"),
 ];
 
 fn fix_stale_model_strings(
@@ -956,6 +966,64 @@ premium = "claude:opus"
         );
         let r = migrate_one(&path, false).unwrap();
         assert!(r.is_noop(), "canonical config should be a no-op; got {:?}", r);
+    }
+
+    #[test]
+    fn fixes_stale_codex_o1_pro_to_gpt54() {
+        let tmp = TempDir::new().unwrap();
+        let path = write_config(
+            tmp.path(),
+            r#"
+[agent]
+model = "codex:o1-pro"
+
+[tiers]
+fast = "codex:gpt-5-mini"
+standard = "codex:gpt-5"
+premium = "codex:o1-pro"
+"#,
+        );
+        let r = migrate_one(&path, false).unwrap();
+        assert!(
+            r.rewritten_values
+                .iter()
+                .any(|(_, old, new)| old == "codex:o1-pro" && new == "codex:gpt-5.4"),
+            "should rewrite codex:o1-pro to codex:gpt-5.4; got {:?}",
+            r.rewritten_values,
+        );
+        let migrated = std::fs::read_to_string(&path).unwrap();
+        assert!(migrated.contains("codex:gpt-5.4"), "migrated should contain codex:gpt-5.4");
+        assert!(!migrated.contains("\"codex:o1-pro\""), "migrated should not contain codex:o1-pro");
+        assert!(!migrated.contains("\"codex:gpt-5-mini\""), "migrated should not contain codex:gpt-5-mini");
+        assert!(!migrated.contains("\"codex:gpt-5\""), "migrated should not contain bare codex:gpt-5");
+    }
+
+    #[test]
+    fn fixes_stale_codex_gpt5_codex_to_gpt54() {
+        let tmp = TempDir::new().unwrap();
+        let path = write_config(
+            tmp.path(),
+            r#"
+[tiers]
+standard = "codex:gpt-5-codex"
+premium = "codex:gpt-5.4-pro"
+"#,
+        );
+        let r = migrate_one(&path, false).unwrap();
+        assert!(
+            r.rewritten_values
+                .iter()
+                .any(|(_, old, new)| old == "codex:gpt-5-codex" && new == "codex:gpt-5.4"),
+            "should rewrite codex:gpt-5-codex to codex:gpt-5.4; got {:?}",
+            r.rewritten_values,
+        );
+        assert!(
+            r.rewritten_values
+                .iter()
+                .any(|(_, old, new)| old == "codex:gpt-5.4-pro" && new == "codex:gpt-5.5"),
+            "should rewrite codex:gpt-5.4-pro to codex:gpt-5.5; got {:?}",
+            r.rewritten_values,
+        );
     }
 
     #[test]

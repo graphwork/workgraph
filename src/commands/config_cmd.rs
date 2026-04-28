@@ -464,7 +464,7 @@ pub fn render_minimal_config(
             ConfigScope::Global => {
                 let model = match route {
                     R::ClaudeCli => "claude:opus",
-                    R::CodexCli => "codex:o1-pro",
+                    R::CodexCli => "codex:gpt-5.4",
                     R::Openrouter => "openrouter:anthropic/claude-opus-4-7",
                     R::Local => "local:qwen2.5-coder:7b",
                     R::NexCustom => "oai-compat:custom-model",
@@ -537,12 +537,18 @@ pub fn render_minimal_config(
         (R::CodexCli, ConfigScope::Global) => format!(
             "{header}\
              [agent]\n\
-             model = \"codex:o1-pro\"\n\
+             model = \"codex:gpt-5.4\"\n\
              \n\
              [tiers]\n\
-             fast = \"codex:gpt-5-mini\"\n\
-             standard = \"codex:gpt-5\"\n\
-             premium = \"codex:o1-pro\"\n",
+             fast = \"codex:gpt-5.4-mini\"\n\
+             standard = \"codex:gpt-5.4\"\n\
+             premium = \"codex:gpt-5.5\"\n\
+             \n\
+             [models.evaluator]\n\
+             model = \"codex:gpt-5.4-mini\"\n\
+             \n\
+             [models.assigner]\n\
+             model = \"codex:gpt-5.4-mini\"\n",
         ),
 
         (R::Local, ConfigScope::Global) => format!(
@@ -604,7 +610,7 @@ pub fn render_minimal_config(
              name = \"\"\n\
              \n\
              [agent]\n\
-             model = \"codex:o1-pro\"\n",
+             model = \"codex:gpt-5.4\"\n",
         ),
 
         (R::Local, ConfigScope::Local) => format!(

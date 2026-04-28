@@ -113,8 +113,10 @@ pub fn builtin_profiles() -> Vec<Profile> {
             strategy: ProfileStrategy::Static {
                 tiers: TierConfig {
                     fast: Some("codex:gpt-5.4-mini".into()),
-                    standard: Some("codex:gpt-5-codex".into()),
-                    premium: Some("codex:gpt-5.4-pro".into()),
+                    // gpt-5-codex sunsets 2026-07-23; gpt-5.4 is the CLI default as of v0.124.0
+                    standard: Some("codex:gpt-5.4".into()),
+                    // gpt-5.5 (released 2026-04-23) supersedes gpt-5.4-pro at lower cost
+                    premium: Some("codex:gpt-5.5".into()),
                 },
             },
         },
@@ -339,8 +341,8 @@ mod tests {
         assert!(profile.is_static());
         let tiers = profile.resolve_tiers().unwrap();
         assert_eq!(tiers.fast.as_deref(), Some("codex:gpt-5.4-mini"));
-        assert_eq!(tiers.standard.as_deref(), Some("codex:gpt-5-codex"));
-        assert_eq!(tiers.premium.as_deref(), Some("codex:gpt-5.4-pro"));
+        assert_eq!(tiers.standard.as_deref(), Some("codex:gpt-5.4"));
+        assert_eq!(tiers.premium.as_deref(), Some("codex:gpt-5.5"));
     }
 
     #[test]

@@ -111,6 +111,43 @@ is_default = true
 
 (Audit §3 line-280 footnote: replace stale `claude-sonnet-4` with `claude-sonnet-4-6` in `openrouter_default_registry()` — handled in implement task.)
 
+### 3.2b `~/.wg/config.toml` — codex-cli route (updated 2026-04-28)
+
+For users running the OpenAI Codex CLI. Model tier mapping as of codex CLI v0.124.0:
+
+| Tier | Model | Notes |
+|------|-------|-------|
+| fast (haiku-equiv) | `codex:gpt-5.4-mini` | OpenAI's recommended subagent model; ~3x cheaper than gpt-5.4 |
+| standard (sonnet-equiv) | `codex:gpt-5.4` | Codex CLI default as of v0.124.0; 1M context |
+| premium (opus-equiv) | `codex:gpt-5.5` | Released 2026-04-23; OpenAI's current frontier model |
+
+**Deprecated model strings** (migrate with `wg migrate config`):
+- `codex:o1-pro` → `codex:gpt-5.4` (shutdown 2026-10-23)
+- `codex:gpt-5-codex` → `codex:gpt-5.4` (shutdown 2026-07-23)
+- `codex:gpt-5-mini` → `codex:gpt-5.4-mini`
+- `codex:gpt-5` → `codex:gpt-5.4`
+- `codex:gpt-5.4-pro` → `codex:gpt-5.5`
+
+```toml
+# ~/.wg/config.toml — written by `wg config init --global --route codex-cli`
+
+[agent]
+model = "codex:gpt-5.4"
+
+[tiers]
+fast = "codex:gpt-5.4-mini"
+standard = "codex:gpt-5.4"
+premium = "codex:gpt-5.5"
+
+[models.evaluator]
+model = "codex:gpt-5.4-mini"
+
+[models.assigner]
+model = "codex:gpt-5.4-mini"
+```
+
+The `[models.evaluator]` / `[models.assigner]` sections are critical — without them, agency meta-tasks (`.evaluate-*`, `.flip-*`, `.assign-*`) silently fall back to the built-in `claude:haiku` even on an all-codex project.
+
 ### 3.3 `.wg/config.toml` — minimal project (the workgraph repo case)
 
 For a project that wants to override the global default to use claude CLI even when global is openrouter:
@@ -167,7 +204,7 @@ Per `feedback_launcher_history_in_config_ui.md`: the "what model?" / "what endpo
    ─────
    [Choose route default]
      claude:opus       (claude CLI route)
-     codex:gpt-5       (codex CLI route)
+     codex:gpt-5.4     (codex CLI route)
      openrouter:...    (openrouter route)
      local:...         (local nex route)
    [Type custom...]
@@ -327,7 +364,11 @@ For each scope, runs:
 3. **Drop restated defaults** (audit §4 "What you should NOT keep in global"):
    - any key whose serialized value equals the built-in default
 4. **Fix known stale model strings** (audit §3 "Confirmed staleness", line 280):
-   - `openrouter:anthropic/claude-sonnet-4` → `openrouter:anthropic/claude-sonnet-4-6` if the registry doesn't know `-4`
+   - `openrouter:anthropic/claude-sonnet-4` → `openrouter:anthropic/claude-sonnet-4-6`
+   - `codex:o1-pro` → `codex:gpt-5.4` (o1-pro deprecated, shutdown 2026-10-23)
+   - `codex:gpt-5-codex` → `codex:gpt-5.4` (sunset 2026-07-23)
+   - `codex:gpt-5-mini` → `codex:gpt-5.4-mini`, `codex:gpt-5` → `codex:gpt-5.4`
+   - `codex:gpt-5.4-pro` → `codex:gpt-5.5`
 5. **Resolve `[models.default]` mismatch** (audit §3 line 280): if `[models.default].model` is non-default AND the user's `[tiers]` and `[[llm_endpoints.endpoints]]` all use a different provider, leave it alone but emit a one-line warning that says "this looks unintentional" — do NOT silently change a model choice (audit §3 line 281 "internally inconsistent").
 
 **Backup before write:** `~/.wg/config.toml.pre-migrate.<timestamp>`. Always.
