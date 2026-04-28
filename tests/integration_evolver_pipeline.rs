@@ -99,6 +99,7 @@ fn make_evaluation(
         timestamp: format!("2026-03-13T12:00:{}Z", id.len() % 60),
         model: Some("test-model".to_string()),
         source: "llm".to_string(),
+        loop_iteration: 0,
     }
 }
 

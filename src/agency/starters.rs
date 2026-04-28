@@ -1047,6 +1047,7 @@ mod tests {
             timestamp: "2025-05-01T12:00:00Z".into(),
             model: None,
             source: "llm".to_string(),
+            loop_iteration: 0,
         }
     }
 

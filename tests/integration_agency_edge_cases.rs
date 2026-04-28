@@ -91,6 +91,7 @@ fn test_record_evaluation_nonexistent_agent() {
         timestamp: "2025-01-01T00:00:00Z".to_string(),
         model: None,
         source: "llm".to_string(),
+        loop_iteration: 0,
     };
 
     // Should succeed — evaluation saved, role/motivation updated, agent skipped
@@ -135,6 +136,7 @@ fn test_record_evaluation_empty_agent_id() {
         timestamp: "2025-01-01T00:00:00Z".to_string(),
         model: None,
         source: "llm".to_string(),
+        loop_iteration: 0,
     };
 
     let eval_path = agency::record_evaluation(&eval, &agency_dir).unwrap();
@@ -166,6 +168,7 @@ fn test_record_evaluation_nonexistent_role_and_motivation() {
         timestamp: "2025-01-01T00:00:00Z".to_string(),
         model: None,
         source: "llm".to_string(),
+        loop_iteration: 0,
     };
 
     // Should succeed — the eval JSON is saved even if role/motivation not found
@@ -246,6 +249,7 @@ fn test_delete_role_referenced_by_agent() {
         timestamp: "2025-01-01T00:00:00Z".to_string(),
         model: None,
         source: "llm".to_string(),
+        loop_iteration: 0,
     };
     let eval_path = agency::record_evaluation(&eval, &agency_dir).unwrap();
     assert!(eval_path.exists());
@@ -330,6 +334,7 @@ fn test_delete_motivation_referenced_by_agent() {
         timestamp: "2025-01-01T00:00:00Z".to_string(),
         model: None,
         source: "llm".to_string(),
+        loop_iteration: 0,
     };
     let eval_path = agency::record_evaluation(&eval, &agency_dir).unwrap();
     assert!(eval_path.exists());

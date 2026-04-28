@@ -7780,10 +7780,16 @@ impl VizApp {
                         .map(|s| s == "flip")
                         .unwrap_or(false);
 
+                    let eval_iter = eval
+                        .get("loop_iteration")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    let iter_label = format!(" [iter {}]", eval_iter);
+
                     if is_flip {
-                        lines.push("── Evaluation (FLIP) ──".to_string());
+                        lines.push(format!("── Evaluation (FLIP){} ──", iter_label));
                     } else {
-                        lines.push("── Evaluation ──".to_string());
+                        lines.push(format!("── Evaluation{} ──", iter_label));
                     }
                     if let Some(score) = eval.get("score").and_then(|v| v.as_f64()) {
                         lines.push(format!("  Score: {:.2}", score));

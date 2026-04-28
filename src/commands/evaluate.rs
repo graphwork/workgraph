@@ -531,6 +531,7 @@ pub fn run(
         timestamp,
         model: task_model.clone(),
         source: "llm".to_string(),
+        loop_iteration: task.loop_iteration,
     };
 
     // Step 8: Save evaluation, update performance records, and trigger retrospective inference
@@ -740,6 +741,7 @@ pub fn run(
                 timestamp: chrono::Utc::now().to_rfc3339(),
                 model: None,
                 source: eval_source::LLM.to_string(),
+                loop_iteration: task.loop_iteration,
             };
 
             if let Err(e) = record_evaluation(&eval_of_evaluator, &agency_dir) {
@@ -1051,6 +1053,7 @@ pub fn run_flip(
         timestamp,
         model: task_model.clone(),
         source: eval_source::FLIP.to_string(),
+        loop_iteration: task.loop_iteration,
     };
 
     // Save evaluation
@@ -1267,6 +1270,7 @@ pub fn run_record(
         timestamp,
         model: None,
         source: source.to_string(),
+        loop_iteration: task.loop_iteration,
     };
 
     // Save evaluation and trigger retrospective inference for learning assignments
@@ -2192,6 +2196,7 @@ mod tests {
             timestamp: String::new(),
             model: None,
             source: String::new(),
+            loop_iteration: 0,
         };
         assert_eq!(
             GateDecision::from_evaluation(&mk_eval(0.9), &config).decision,
@@ -2250,6 +2255,7 @@ mod tests {
             timestamp: String::new(),
             model: None,
             source: "llm".to_string(),
+            loop_iteration: 0,
         }
     }
 

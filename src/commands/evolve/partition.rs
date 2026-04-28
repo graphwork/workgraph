@@ -653,6 +653,7 @@ mod tests {
             timestamp: "2026-03-13T12:00:00Z".to_string(),
             model: None,
             source: "llm".to_string(),
+            loop_iteration: 0,
         }
     }
 

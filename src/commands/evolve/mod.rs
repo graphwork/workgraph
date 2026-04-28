@@ -546,6 +546,7 @@ pub fn run(
                 timestamp: chrono::Utc::now().to_rfc3339(),
                 model: None,
                 source: "llm".to_string(),
+                loop_iteration: 0,
             };
 
             if let Err(e) = agency::record_evaluation(&eval_of_evolver, &agency_dir) {
@@ -2516,6 +2517,7 @@ Let me know if you'd like me to adjust anything."#;
                 timestamp: "2025-01-01T00:00:00Z".into(),
                 model: None,
                 source: "llm".to_string(),
+                loop_iteration: 0,
             },
             Evaluation {
                 id: "e2".into(),
@@ -2530,6 +2532,7 @@ Let me know if you'd like me to adjust anything."#;
                 timestamp: "2025-01-02T00:00:00Z".into(),
                 model: None,
                 source: "llm".to_string(),
+                loop_iteration: 0,
             },
             Evaluation {
                 id: "e3".into(),
@@ -2544,6 +2547,7 @@ Let me know if you'd like me to adjust anything."#;
                 timestamp: "2025-01-03T00:00:00Z".into(),
                 model: None,
                 source: "llm".to_string(),
+                loop_iteration: 0,
             },
         ];
 

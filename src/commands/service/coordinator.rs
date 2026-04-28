@@ -6045,6 +6045,7 @@ mod tests {
             timestamp: chrono::Utc::now().to_rfc3339(),
             model: None,
             source: workgraph::agency::eval_source::FLIP.to_string(),
+            loop_iteration: 0,
         };
 
         let eval_path = evals_dir.join("flip-my-task-123.json");
@@ -6169,6 +6170,7 @@ mod tests {
             timestamp: chrono::Utc::now().to_rfc3339(),
             model: None,
             source: workgraph::agency::eval_source::FLIP.to_string(),
+            loop_iteration: 0,
         };
 
         let eval_path = evals_dir.join("flip-t1-123.json");

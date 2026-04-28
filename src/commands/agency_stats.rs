@@ -1011,6 +1011,7 @@ mod tests {
                 timestamp: "2025-01-01T00:00:00Z".into(),
                 model: None,
                 source: "llm".to_string(),
+                loop_iteration: 0,
             },
             Evaluation {
                 id: "e2".into(),
@@ -1025,6 +1026,7 @@ mod tests {
                 timestamp: "2025-01-02T00:00:00Z".into(),
                 model: None,
                 source: "llm".to_string(),
+                loop_iteration: 0,
             },
         ];
 
@@ -1086,6 +1088,7 @@ mod tests {
             timestamp: "2025-01-01T00:00:00Z".into(),
             model: None,
             source: "llm".to_string(),
+            loop_iteration: 0,
         }];
         let mut tags = HashMap::new();
         tags.insert("t1".to_string(), vec!["cli".to_string()]);
@@ -1164,6 +1167,7 @@ mod tests {
                 timestamp: "2025-01-01T00:00:00Z".into(),
                 model: Some("opus".into()),
                 source: "llm".to_string(),
+                loop_iteration: 0,
             },
             Evaluation {
                 id: "e2".into(),
@@ -1178,6 +1182,7 @@ mod tests {
                 timestamp: "2025-01-02T00:00:00Z".into(),
                 model: Some("sonnet".into()),
                 source: "llm".to_string(),
+                loop_iteration: 0,
             },
         ];
 
@@ -1211,6 +1216,7 @@ mod tests {
                 timestamp: "2025-01-01T00:00:00Z".into(),
                 model: Some("opus".into()),
                 source: "llm".to_string(),
+                loop_iteration: 0,
             },
             Evaluation {
                 id: "e2".into(),
@@ -1225,6 +1231,7 @@ mod tests {
                 timestamp: "2025-01-02T00:00:00Z".into(),
                 model: Some("sonnet".into()),
                 source: "llm".to_string(),
+                loop_iteration: 0,
             },
         ];
 

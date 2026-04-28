@@ -221,6 +221,7 @@ fn test_regular_evaluation_records_correctly() {
         timestamp: "2026-02-28T12:00:00Z".to_string(),
         model: Some("haiku".to_string()),
         source: "llm".to_string(),
+        loop_iteration: 0,
     };
 
     let eval_path = agency::record_evaluation(&eval, &agency_dir).unwrap();
@@ -284,6 +285,7 @@ fn test_evaluation_with_org_dimensions_is_regular() {
             timestamp: format!("2026-02-28T1{}:00:00Z", i),
             model: None,
             source: "llm".to_string(),
+            loop_iteration: 0,
         };
         agency::record_evaluation(&eval, &agency_dir).unwrap();
     }
@@ -342,6 +344,7 @@ fn test_evolution_performance_summary_no_org_scores() {
             timestamp: format!("2026-02-28T1{}:00:00Z", i),
             model: None,
             source: "llm".to_string(),
+            loop_iteration: 0,
         };
         agency::record_evaluation(&eval, &agency_dir).unwrap();
     }

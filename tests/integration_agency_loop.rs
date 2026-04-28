@@ -67,6 +67,7 @@ fn make_evaluation(
         timestamp: format!("2025-06-01T12:00:{}Z", id.len() % 60),
         model: Some("test-model".to_string()),
         source: "llm".to_string(),
+        loop_iteration: 0,
     }
 }
 
@@ -784,6 +785,7 @@ fn test_evolution_disabled_no_trigger() {
             timestamp: format!("2025-06-01T1{}:00:00Z", i % 10),
             model: None,
             source: "llm".into(),
+            loop_iteration: 0,
         };
         let path = evals_dir.join(format!("eval-{}.json", i));
         fs::write(&path, serde_json::to_string(&eval).unwrap()).unwrap();

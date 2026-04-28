@@ -56,6 +56,7 @@ fn record_assigner_evaluation(
         timestamp: chrono::Utc::now().to_rfc3339(),
         model: None,
         source: "system".to_string(),
+        loop_iteration: 0,
     };
 
     if let Err(e) = agency::record_evaluation(&eval, agency_dir) {

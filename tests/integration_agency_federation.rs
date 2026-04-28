@@ -102,6 +102,7 @@ fn make_evaluation(
         timestamp: "2026-01-15T12:00:00Z".to_string(),
         model: None,
         source: "llm".to_string(),
+        loop_iteration: 0,
     }
 }
 

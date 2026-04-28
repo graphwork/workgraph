@@ -117,6 +117,7 @@ impl TestFixture {
             timestamp: "2025-06-01T12:00:00Z".to_string(),
             model: None,
             source: "llm".to_string(),
+            loop_iteration: 0,
         }
     }
 }
@@ -149,6 +150,7 @@ fn test_record_evaluation_json_format() {
         timestamp: "2025-06-15T14:30:00Z".to_string(),
         model: None,
         source: "llm".to_string(),
+        loop_iteration: 0,
     };
 
     let eval_path = agency::record_evaluation(&eval, &fix.agency_dir).unwrap();
@@ -250,6 +252,7 @@ fn test_multiple_evaluations_same_agent_avg() {
         timestamp: "2025-06-01T10:00:00Z".to_string(),
         model: None,
         source: "llm".to_string(),
+        loop_iteration: 0,
     };
     let eval2 = Evaluation {
         id: "e2".to_string(),
@@ -264,6 +267,7 @@ fn test_multiple_evaluations_same_agent_avg() {
         timestamp: "2025-06-01T11:00:00Z".to_string(),
         model: None,
         source: "llm".to_string(),
+        loop_iteration: 0,
     };
 
     agency::record_evaluation(&eval1, &fix.agency_dir).unwrap();
@@ -305,6 +309,7 @@ fn test_three_evaluations_incremental_avg() {
             timestamp: format!("2025-06-01T{}:00:00Z", 10 + i),
             model: None,
             source: "llm".to_string(),
+            loop_iteration: 0,
         };
         agency::record_evaluation(&eval, &fix.agency_dir).unwrap();
     }
@@ -345,6 +350,7 @@ fn test_context_ids_tracked_independently() {
         timestamp: "2025-06-01T12:00:00Z".to_string(),
         model: None,
         source: "llm".to_string(),
+        loop_iteration: 0,
     };
     agency::record_evaluation(&eval, &fix.agency_dir).unwrap();
 
@@ -411,6 +417,7 @@ fn test_role_tracks_different_motivation_context_ids() {
         timestamp: "2025-06-01T10:00:00Z".to_string(),
         model: None,
         source: "llm".to_string(),
+        loop_iteration: 0,
     };
     agency::record_evaluation(&eval_a, &agency_dir).unwrap();
 
@@ -428,6 +435,7 @@ fn test_role_tracks_different_motivation_context_ids() {
         timestamp: "2025-06-01T11:00:00Z".to_string(),
         model: None,
         source: "llm".to_string(),
+        loop_iteration: 0,
     };
     agency::record_evaluation(&eval_b, &agency_dir).unwrap();
 
@@ -477,6 +485,7 @@ fn test_motivation_tracks_different_role_context_ids() {
         timestamp: "2025-06-01T10:00:00Z".to_string(),
         model: None,
         source: "llm".to_string(),
+        loop_iteration: 0,
     };
     let eval_b = Evaluation {
         id: "e-rb".to_string(),
@@ -491,6 +500,7 @@ fn test_motivation_tracks_different_role_context_ids() {
         timestamp: "2025-06-01T11:00:00Z".to_string(),
         model: None,
         source: "llm".to_string(),
+        loop_iteration: 0,
     };
 
     agency::record_evaluation(&eval_a, &agency_dir).unwrap();
@@ -628,6 +638,7 @@ fn test_twelve_evaluations_end_to_end() {
             timestamp: format!("2025-06-{:02}T10:00:00Z", i + 1),
             model: None,
             source: "llm".to_string(),
+            loop_iteration: 0,
         };
         agency::record_evaluation(&eval, &fix.agency_dir).unwrap();
     }
@@ -983,4 +994,74 @@ fn test_update_performance_sequential_correctness() {
     );
     assert_eq!(record.task_count, 3);
     assert!((record.avg_score.unwrap() - 0.80).abs() < 1e-10);
+}
+
+// ===========================================================================
+// 7. loop_iteration round-trips through save / load
+// ===========================================================================
+
+/// In a cycle, each `.flip-X` / `.evaluate-X` re-run produces its own
+/// Evaluation tagged with the parent task's `loop_iteration` at the moment
+/// the eval was written. The field must survive the JSON save/load cycle so
+/// `wg show` and the TUI can label each entry. See task tui-detail-view.
+#[test]
+fn test_evaluation_loop_iteration_round_trips() {
+    let fix = TestFixture::new();
+
+    let mut iter1 = fix.make_evaluation("iter1", "cycle-task", 0.04, true);
+    iter1.timestamp = "2026-04-28T20:04:45Z".to_string();
+    iter1.loop_iteration = 1;
+
+    let mut iter2 = fix.make_evaluation("iter2", "cycle-task", 0.65, true);
+    iter2.timestamp = "2026-04-28T22:14:00Z".to_string();
+    iter2.loop_iteration = 2;
+
+    let path1 = agency::record_evaluation(&iter1, &fix.agency_dir).unwrap();
+    let path2 = agency::record_evaluation(&iter2, &fix.agency_dir).unwrap();
+
+    let loaded1 = agency::load_evaluation(&path1).unwrap();
+    let loaded2 = agency::load_evaluation(&path2).unwrap();
+
+    assert_eq!(
+        loaded1.loop_iteration, 1,
+        "iteration 1 eval must persist loop_iteration=1"
+    );
+    assert_eq!(
+        loaded2.loop_iteration, 2,
+        "iteration 2 eval must persist loop_iteration=2"
+    );
+    // Distinct scores per iteration — proving the two evals are independent
+    // records, not a single overwritten one.
+    assert!((loaded1.score - 0.04).abs() < 1e-10);
+    assert!((loaded2.score - 0.65).abs() < 1e-10);
+}
+
+/// Pre-existing evaluation JSON written before the `loop_iteration` field
+/// was introduced must still load (defaulting to 0). Otherwise the upgrade
+/// would orphan all historical evals on disk.
+#[test]
+fn test_evaluation_loads_without_loop_iteration_field() {
+    let fix = TestFixture::new();
+    let evals_dir = fix.agency_dir.join("evaluations");
+    std::fs::create_dir_all(&evals_dir).unwrap();
+
+    let legacy_json = r#"{
+        "id": "legacy-eval",
+        "task_id": "old-task",
+        "agent_id": "",
+        "role_id": "r1",
+        "tradeoff_id": "t1",
+        "score": 0.7,
+        "dimensions": {},
+        "notes": "legacy",
+        "evaluator": "test",
+        "timestamp": "2026-01-01T00:00:00Z",
+        "source": "llm"
+    }"#;
+    let path = evals_dir.join("eval-old-task-2026-01-01T00-00-00Z.json");
+    std::fs::write(&path, legacy_json).unwrap();
+
+    let loaded = agency::load_evaluation(&path).unwrap();
+    assert_eq!(loaded.loop_iteration, 0);
+    assert_eq!(loaded.task_id, "old-task");
 }

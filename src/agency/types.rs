@@ -503,6 +503,14 @@ pub struct Evaluation {
     pub model: Option<String>,
     #[serde(default = "default_eval_source")]
     pub source: String,
+    /// Iteration of the parent task at the time this evaluation was recorded.
+    /// 0 for non-cycle tasks (or pre-existing evaluations from before this field).
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub loop_iteration: u32,
+}
+
+fn is_zero_u32(v: &u32) -> bool {
+    *v == 0
 }
 
 fn default_eval_source() -> String {

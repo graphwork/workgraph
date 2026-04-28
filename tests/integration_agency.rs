@@ -222,6 +222,7 @@ fn test_full_agency_lifecycle() {
         timestamp: "2025-01-15T11:00:00Z".to_string(),
         model: None,
         source: "llm".to_string(),
+        loop_iteration: 0,
     };
 
     let eval_path = agency::record_evaluation(&evaluation, &agency_dir).unwrap();
@@ -292,6 +293,7 @@ fn test_full_agency_lifecycle() {
         timestamp: "2025-01-16T09:00:00Z".to_string(),
         model: None,
         source: "llm".to_string(),
+        loop_iteration: 0,
     };
 
     agency::record_evaluation(&evaluation2, &agency_dir).unwrap();
@@ -612,6 +614,7 @@ fn test_full_agency_lifecycle_new_design() {
         timestamp: "2025-06-01T12:30:00Z".to_string(),
         model: None,
         source: "llm".to_string(),
+        loop_iteration: 0,
     };
 
     let eval_path = agency::record_evaluation(&evaluation, &agency_dir).unwrap();
@@ -707,6 +710,7 @@ fn test_full_agency_lifecycle_new_design() {
         timestamp: "2025-06-02T10:00:00Z".to_string(),
         model: None,
         source: "llm".to_string(),
+        loop_iteration: 0,
     };
     agency::record_evaluation(&eval2, &agency_dir).unwrap();
 
@@ -957,6 +961,7 @@ performance:
         timestamp: "2025-06-03T08:00:00Z".to_string(),
         model: None,
         source: "llm".to_string(),
+        loop_iteration: 0,
     };
     let slug_eval_result = agency::record_evaluation(&slug_eval, &agency_dir);
     assert!(
@@ -1117,6 +1122,7 @@ fn test_agent_independent_performance() {
         timestamp: "2025-08-01T10:00:00Z".to_string(),
         model: None,
         source: "llm".to_string(),
+        loop_iteration: 0,
     };
     agency::record_evaluation(&eval_a, &agency_dir).unwrap();
 

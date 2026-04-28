@@ -562,6 +562,7 @@ mod tests {
             timestamp: "2025-05-01T12:00:00Z".into(),
             model: None,
             source: "llm".to_string(),
+            loop_iteration: 0,
         };
 
         let eval_path = record_evaluation(&eval, &agency_dir).unwrap();
@@ -626,6 +627,7 @@ mod tests {
             timestamp: "2025-05-01T10:00:00Z".into(),
             model: None,
             source: "llm".to_string(),
+            loop_iteration: 0,
         };
 
         let eval2 = Evaluation {
@@ -641,6 +643,7 @@ mod tests {
             timestamp: "2025-05-01T11:00:00Z".into(),
             model: None,
             source: "llm".to_string(),
+            loop_iteration: 0,
         };
 
         record_evaluation(&eval1, &agency_dir).unwrap();
@@ -685,6 +688,7 @@ mod tests {
             timestamp: "2025-05-01T12:00:00Z".into(),
             model: None,
             source: "llm".to_string(),
+            loop_iteration: 0,
         };
 
         let result = record_evaluation(&eval, &agency_dir);
@@ -778,6 +782,7 @@ mod tests {
             timestamp: "2025-06-01T12:00:00Z".into(),
             model: None,
             source: "llm".to_string(),
+            loop_iteration: 0,
         };
 
         record_evaluation(&eval, &agency_dir).unwrap();
@@ -831,6 +836,7 @@ mod tests {
             timestamp: "2025-06-01T13:00:00Z".into(),
             model: None,
             source: "llm".to_string(),
+            loop_iteration: 0,
         };
 
         record_evaluation(&eval, &agency_dir).unwrap();
@@ -879,6 +885,7 @@ mod tests {
             timestamp: "2025-06-01T14:00:00Z".into(),
             model: None,
             source: "llm".to_string(),
+            loop_iteration: 0,
         };
 
         // Should not error — missing components/outcomes are warned, not failed
@@ -936,6 +943,7 @@ mod tests {
                 timestamp: format!("2025-06-01T1{}:00:00Z", i),
                 model: None,
                 source: "llm".to_string(),
+                loop_iteration: 0,
             };
             record_evaluation(&eval, &agency_dir).unwrap();
         }
