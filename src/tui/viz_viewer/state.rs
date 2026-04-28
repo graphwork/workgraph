@@ -3229,6 +3229,134 @@ pub fn parse_raw_stream_line(line: &str, default_agent_id: &str) -> Option<Agent
             }
             None
         }
+        // ── Codex CLI stream events (`codex exec --json`) ───────────────────
+        // Codex emits JSONL with a different shape than claude. The notable
+        // ones are `item.completed` (final form of an item, with output) and
+        // `item.started` (in-progress, no output yet). We only surface
+        // `item.completed` to keep events de-duplicated — matching codex's
+        // own streaming-text vs finalized-message races (mirror of the
+        // streaming/finalized pairing the native PTY-doubling fix handled).
+        // Bookkeeping events (`thread.started`, `turn.started`, `turn.completed`)
+        // are swallowed so they don't pollute the live pane.
+        "thread.started" | "turn.started" | "turn.completed" => None,
+        "item.started" | "item.updated" => None,
+        "item.completed" => {
+            let item = val.get("item")?;
+            let item_type = item.get("type").and_then(|v| v.as_str()).unwrap_or("");
+            match item_type {
+                "agent_message" => {
+                    let text = item.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                    let text = text.trim();
+                    if text.is_empty() {
+                        return None;
+                    }
+                    Some(AgentStreamEvent {
+                        kind: AgentStreamEventKind::TextOutput,
+                        agent_id: default_agent_id.to_string(),
+                        summary: text.to_string(),
+                        details: Some(EventDetails::TextOutput {
+                            text: text.to_string(),
+                        }),
+                    })
+                }
+                "command_execution" => {
+                    let command = item.get("command").and_then(|v| v.as_str()).unwrap_or("");
+                    let output = item
+                        .get("aggregated_output")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let exit_code = item.get("exit_code").and_then(|v| v.as_i64());
+                    let status = item.get("status").and_then(|v| v.as_str()).unwrap_or("");
+                    let is_error = status == "failed"
+                        || matches!(exit_code, Some(c) if c != 0);
+                    let cmd_trimmed = command.trim();
+                    let cmd_display = if cmd_trimmed.len() > 120 {
+                        format!("{}…", &cmd_trimmed[..cmd_trimmed.floor_char_boundary(120)])
+                    } else {
+                        cmd_trimmed.to_string()
+                    };
+                    let call_summary = if cmd_display.is_empty() {
+                        "⌁ Bash".to_string()
+                    } else {
+                        format!("⌁ Bash → {}", cmd_display)
+                    };
+                    let output_trimmed = output.trim();
+                    let summary = if output_trimmed.is_empty() {
+                        // Even with no output captured, embed a status marker
+                        // so the renderer paints the leading ✓ / ✗ — otherwise
+                        // a successful no-output codex command (e.g. `mv a b`)
+                        // looks "in flight" forever.
+                        let prefix = if is_error { "✗" } else { "✓" };
+                        format!("{}\n  {} (no output)", call_summary, prefix)
+                    } else {
+                        let preview = if output_trimmed.len() > 100 {
+                            format!(
+                                "{}…",
+                                &output_trimmed[..output_trimmed.floor_char_boundary(100)]
+                            )
+                        } else {
+                            output_trimmed.to_string()
+                        };
+                        let prefix = if is_error { "✗" } else { "✓" };
+                        format!("{}\n  {} {}", call_summary, prefix, preview)
+                    };
+                    Some(AgentStreamEvent {
+                        kind: if is_error {
+                            AgentStreamEventKind::Error
+                        } else {
+                            AgentStreamEventKind::ToolCall
+                        },
+                        agent_id: default_agent_id.to_string(),
+                        summary,
+                        details: Some(EventDetails::ToolCall {
+                            name: "Bash".to_string(),
+                            input: serde_json::json!({ "command": command }),
+                        }),
+                    })
+                }
+                "reasoning" => {
+                    let text = item
+                        .get("text")
+                        .or_else(|| item.get("content"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let text = text.trim();
+                    if text.is_empty() {
+                        return None;
+                    }
+                    let truncated = if text.len() > 200 {
+                        format!("{}…", &text[..text.floor_char_boundary(200)])
+                    } else {
+                        text.to_string()
+                    };
+                    Some(AgentStreamEvent {
+                        kind: AgentStreamEventKind::Thinking,
+                        agent_id: default_agent_id.to_string(),
+                        summary: format!("💭 {}", truncated),
+                        details: Some(EventDetails::Thinking {
+                            text: text.to_string(),
+                        }),
+                    })
+                }
+                _ => None,
+            }
+        }
+        "error" | "turn.failed" => {
+            let message = val
+                .get("message")
+                .and_then(|v| v.as_str())
+                .or_else(|| val.get("error").and_then(|v| v.as_str()))
+                .unwrap_or("codex error");
+            Some(AgentStreamEvent {
+                kind: AgentStreamEventKind::Error,
+                agent_id: default_agent_id.to_string(),
+                summary: format!("✗ {}", message),
+                details: Some(EventDetails::ToolResult {
+                    content: message.to_string(),
+                    is_error: true,
+                }),
+            })
+        }
         _ => None,
     }
 }
@@ -22933,6 +23061,184 @@ mod agent_stream_tests {
         let event = parse_raw_stream_line(line, "agent-11").unwrap();
         assert_eq!(event.kind, AgentStreamEventKind::TextOutput);
         assert!(event.summary.contains("Working on it."));
+    }
+
+    // ── Codex CLI stream parsing (regression: tui-live-log) ─────────────────
+    // Covers the bug where `parse_raw_stream_line` returned None for every
+    // codex `item.completed` / `thread.started` / `turn.*` event, leaving
+    // the TUI live log pane empty for any agent running on a `codex:*`
+    // model.
+
+    #[test]
+    fn test_parse_codex_agent_message() {
+        let line = r#"{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"Starting the task now."}}"#;
+        let event = parse_raw_stream_line(line, "agent-c1").unwrap();
+        assert_eq!(event.kind, AgentStreamEventKind::TextOutput);
+        assert!(event.summary.contains("Starting the task now."));
+        assert_eq!(event.agent_id, "agent-c1");
+    }
+
+    #[test]
+    fn test_parse_codex_command_execution_success() {
+        let line = r#"{"type":"item.completed","item":{"id":"item_5","type":"command_execution","command":"cargo build","aggregated_output":"Compiling...","exit_code":0,"status":"completed"}}"#;
+        let event = parse_raw_stream_line(line, "agent-c2").unwrap();
+        assert_eq!(event.kind, AgentStreamEventKind::ToolCall);
+        assert!(event.summary.contains("Bash"), "got: {}", event.summary);
+        assert!(event.summary.contains("cargo build"), "got: {}", event.summary);
+        assert!(event.summary.contains("Compiling"), "got: {}", event.summary);
+        assert!(event.summary.contains("✓"), "got: {}", event.summary);
+    }
+
+    #[test]
+    fn test_parse_codex_command_execution_failure() {
+        let line = r#"{"type":"item.completed","item":{"id":"item_5","type":"command_execution","command":"false","aggregated_output":"","exit_code":1,"status":"failed"}}"#;
+        let event = parse_raw_stream_line(line, "agent-c3").unwrap();
+        assert_eq!(event.kind, AgentStreamEventKind::Error);
+        assert!(event.summary.contains("✗"), "got: {}", event.summary);
+        assert!(event.summary.contains("false"), "got: {}", event.summary);
+    }
+
+    #[test]
+    fn test_parse_codex_reasoning() {
+        let line = r#"{"type":"item.completed","item":{"id":"item_2","type":"reasoning","text":"Considering the next step carefully."}}"#;
+        let event = parse_raw_stream_line(line, "agent-c4").unwrap();
+        assert_eq!(event.kind, AgentStreamEventKind::Thinking);
+        assert!(event.summary.contains("💭"), "got: {}", event.summary);
+        assert!(event.summary.contains("Considering"), "got: {}", event.summary);
+    }
+
+    #[test]
+    fn test_parse_codex_bookkeeping_events_ignored() {
+        // Bookkeeping events are intentionally swallowed so they don't
+        // pollute the live log pane.
+        for line in [
+            r#"{"type":"thread.started","thread_id":"abc-123"}"#,
+            r#"{"type":"turn.started"}"#,
+            r#"{"type":"turn.completed","usage":{"input_tokens":100}}"#,
+            r#"{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"ls","status":"in_progress"}}"#,
+            r#"{"type":"item.updated","item":{"id":"item_1","type":"agent_message","text":"partial..."}}"#,
+        ] {
+            assert!(
+                parse_raw_stream_line(line, "agent-c").is_none(),
+                "expected None for codex bookkeeping line: {}",
+                line
+            );
+        }
+    }
+
+    #[test]
+    fn test_parse_codex_error_event() {
+        let line = r#"{"type":"error","message":"connection lost"}"#;
+        let event = parse_raw_stream_line(line, "agent-c5").unwrap();
+        assert_eq!(event.kind, AgentStreamEventKind::Error);
+        assert!(event.summary.contains("connection lost"), "got: {}", event.summary);
+    }
+
+    /// Regression: a running codex agent's `raw_stream.jsonl` produced
+    /// zero stream_events, so the TUI live log pane stayed empty even
+    /// while `tail -f .wg/agents/<id>/output.log` showed active output.
+    /// This wires the same path the TUI uses (`load_log_pane` →
+    /// `update_log_stream_events`) against a codex-format fixture and
+    /// asserts the pane gets non-empty content.
+    #[test]
+    fn test_log_view_renders_codex_stream_for_running_codex_agent() {
+        use std::collections::{HashMap, HashSet};
+        use workgraph::graph::{Node, Status, WorkGraph};
+        use workgraph::parser::save_graph;
+        use workgraph::test_helpers::make_task_with_status;
+        use crate::commands::viz::ascii::generate_ascii;
+        use crate::commands::viz::{LayoutMode, VizOutput};
+
+        let mut graph = WorkGraph::new();
+        let mut task = make_task_with_status("codex-task", "Codex Task", Status::InProgress);
+        task.assigned = Some("agent-codex".to_string());
+        graph.add_node(Node::Task(task));
+
+        let tmp = tempfile::tempdir().unwrap();
+        let graph_path = tmp.path().join("graph.jsonl");
+        save_graph(&graph, &graph_path).unwrap();
+
+        let agent_dir = tmp.path().join("agents").join("agent-codex");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        // Real fixture pulled from agent-941 (create-agents-md cycle iter 2):
+        // codex `--json` emits these events in this order. Pre-fix the
+        // parser dropped every line and the pane stayed empty.
+        let stream_content = [
+            r#"{"type":"thread.started","thread_id":"019dd603-7cc3-77e3-a49f-ebc4e87faaa1"}"#,
+            r#"{"type":"turn.started"}"#,
+            r#"{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"I'll continue from the prior staged-copy state."}}"#,
+            r#"{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"git status --short","aggregated_output":"","exit_code":null,"status":"in_progress"}}"#,
+            r#"{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"git status --short","aggregated_output":"?? AGENTS.md","exit_code":0,"status":"completed"}}"#,
+            r#"{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"The copy validation passed locally."}}"#,
+            r#"{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":50}}"#,
+        ];
+        std::fs::write(
+            agent_dir.join("raw_stream.jsonl"),
+            stream_content.join("\n"),
+        )
+        .unwrap();
+        std::fs::write(agent_dir.join("output.log"), "").unwrap();
+
+        let tasks: Vec<_> = graph.tasks().collect();
+        let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
+        let viz: VizOutput = generate_ascii(
+            &graph,
+            &tasks,
+            &task_ids,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::Tree,
+            &HashSet::new(),
+            "gray",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+
+        let mut app = VizApp::from_viz_output_for_test(&viz);
+        app.workgraph_dir = tmp.path().to_path_buf();
+        let idx = app.task_order.iter().position(|id| id == "codex-task");
+        app.selected_task_idx = idx;
+
+        app.load_log_pane();
+        assert_eq!(app.log_pane.agent_id.as_deref(), Some("agent-codex"));
+
+        app.update_log_stream_events();
+
+        // Pre-fix: stream_events was empty (the bug). Post-fix: 3
+        // surfaceable events — two agent_messages + one command_execution.
+        // Bookkeeping (thread.started, turn.started, turn.completed,
+        // item.started) is intentionally swallowed.
+        assert_eq!(
+            app.log_pane.stream_events.len(),
+            3,
+            "expected 3 events from codex stream, got: {:?}",
+            app.log_pane
+                .stream_events
+                .iter()
+                .map(|e| (e.kind.clone(), e.summary.clone()))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            app.log_pane.stream_events[0].kind,
+            AgentStreamEventKind::TextOutput
+        );
+        assert!(app.log_pane.stream_events[0]
+            .summary
+            .contains("continue from the prior"));
+        assert_eq!(
+            app.log_pane.stream_events[1].kind,
+            AgentStreamEventKind::ToolCall
+        );
+        assert!(app.log_pane.stream_events[1].summary.contains("git status"));
+        assert!(app.log_pane.stream_events[1].summary.contains("AGENTS.md"));
+        assert_eq!(
+            app.log_pane.stream_events[2].kind,
+            AgentStreamEventKind::TextOutput
+        );
+        assert!(app.log_pane.stream_events[2]
+            .summary
+            .contains("copy validation passed"));
     }
 
     #[test]
