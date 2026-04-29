@@ -602,6 +602,15 @@ description = "Pins fix-codex-chat-3: codex chat in wg TUI must (1) render real-
 timeout_seconds = 180
 
 [[scenario]]
+name = "tui_scroll_mode_toggle"
+script = "scenarios/tui_scroll_mode.sh"
+owners = [
+    "implement-tui-scroll",
+]
+description = "Pins the Ctrl+] scroll mode implementation. Runs cargo test for all scroll_mode_tests unit tests which cover: entering scroll mode, all exit keys (Esc/q/Ctrl+]), key-swallowing (letter keys not forwarded to PTY in scroll mode), scroll navigation (PageUp/End), and automatic exit on pane-switch. No live LLM endpoint required."
+timeout_seconds = 120
+
+[[scenario]]
 name = "failed_pending_eval_state_machine"
 script = "scenarios/failed_pending_eval_state_machine.sh"
 owners = [
