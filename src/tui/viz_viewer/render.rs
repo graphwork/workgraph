@@ -2542,6 +2542,130 @@ fn render_iteration_navigator(frame: &mut Frame, app: &VizApp, area: Rect) {
     frame.render_widget(paragraph, area);
 }
 
+/// Pick the prev/next segment widths for the Detail-tab iteration nav bar
+/// based on available width. The segments are the click targets, so they
+/// must be at least 3 cells wide; we widen them to "[ ◀ Prev ]" / "[ Next ▶ ]"
+/// (12 cells each) when the bar is wide enough to fit a meaningful center
+/// label alongside them.
+///
+/// Returns `(left_segment, right_segment)` strings, each of equal length
+/// (matching segment width).
+fn iter_nav_segments(width: u16) -> (&'static str, &'static str) {
+    let w = width as usize;
+    if w >= 60 {
+        ("  ◀  Prev  ", "  Next  ▶  ")
+    } else if w >= 30 {
+        ("  ◀  ", "  ▶  ")
+    } else {
+        (" ◀ ", " ▶ ")
+    }
+}
+
+/// Layout output for the Detail tab iteration nav bar — the click zones the
+/// caller stores on `app` so the click handler can hit-test.
+pub(super) struct IterNavBarLayout {
+    pub prev_zone: Rect,
+    pub next_zone: Rect,
+}
+
+/// Render the informative iteration-navigation bar at the top of the Detail
+/// tab. Layout (left → right):
+///   [ prev clickable segment ] [ centered iteration label ] [ next clickable segment ]
+///
+/// The prev/next segments are ≥ 3 cells wide so mouse precision isn't
+/// required. The center label is built by the caller (typically via
+/// `VizApp::iteration_bar_label`) and includes iteration N of M, start
+/// time, and outcome / live-state — so a glance at the bar tells the user
+/// what they're looking at and how to navigate.
+///
+/// Pure-functional: takes only the data needed to render. Returns the
+/// hit-test rects so the caller can store them on the app state.
+pub(super) fn render_detail_iteration_bar(
+    frame: &mut Frame,
+    area: Rect,
+    label: &str,
+    can_go_prev: bool,
+    can_go_next: bool,
+) -> IterNavBarLayout {
+    use ratatui::layout::Alignment;
+
+    let (left_seg, right_seg) = iter_nav_segments(area.width);
+    let left_w = left_seg.chars().count() as u16;
+    let right_w = right_seg.chars().count() as u16;
+    let center_w = area.width.saturating_sub(left_w + right_w);
+
+    let prev_zone = Rect {
+        x: area.x,
+        y: area.y,
+        width: left_w,
+        height: 1,
+    };
+    let next_zone = Rect {
+        x: area.x + left_w + center_w,
+        y: area.y,
+        width: right_w,
+        height: 1,
+    };
+
+    let active_arrow_style = Style::default()
+        .fg(Color::Yellow)
+        .add_modifier(Modifier::BOLD)
+        .bg(Color::Rgb(30, 30, 50));
+    let inactive_arrow_style = Style::default()
+        .fg(Color::DarkGray)
+        .bg(Color::Rgb(15, 15, 25));
+    let left_style = if can_go_prev {
+        active_arrow_style
+    } else {
+        inactive_arrow_style
+    };
+    let right_style = if can_go_next {
+        active_arrow_style
+    } else {
+        inactive_arrow_style
+    };
+
+    let max_label_len = (center_w as usize).saturating_sub(2);
+    let label_owned: String = if label.chars().count() > max_label_len && max_label_len > 0 {
+        let mut s: String = label.chars().take(max_label_len.saturating_sub(1)).collect();
+        s.push('…');
+        s
+    } else {
+        label.to_string()
+    };
+    let label_style = Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD)
+        .bg(Color::Rgb(15, 15, 25));
+
+    let center_area = Rect {
+        x: area.x + left_w,
+        y: area.y,
+        width: center_w,
+        height: 1,
+    };
+
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(left_seg, left_style))),
+        prev_zone,
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(label_owned, label_style)))
+            .style(Style::default().bg(Color::Rgb(15, 15, 25)))
+            .alignment(Alignment::Center),
+        center_area,
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(right_seg, right_style))),
+        next_zone,
+    );
+
+    IterNavBarLayout {
+        prev_zone,
+        next_zone,
+    }
+}
+
 /// Draw the Detail tab content (evolved from HUD).
 fn draw_detail_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     let detail = match &app.hud_detail {
@@ -2578,89 +2702,17 @@ fn draw_detail_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
 
     // ── Iteration navigation header ──
     if let Some(ha) = header_area {
+        let label = app.iteration_bar_label();
+        let can_go_prev = app.iter_can_go_prev();
+        let can_go_next = app.iter_can_go_next();
+        let layout = render_detail_iteration_bar(frame, ha, &label, can_go_prev, can_go_next);
         app.last_iter_nav_area = ha;
-
-        let total = app.iteration_archives.len() + 1; // archives + current
-        // Mark the live slot with "(live)" when the task is actively running,
-        // so the user can distinguish "rightmost slot is streaming" from
-        // "rightmost slot is frozen content from the most recent archive".
-        let live_suffix = if app.viewing_iteration.is_none()
-            && app
-                .hud_detail
-                .as_ref()
-                .is_some_and(|d| d.task_status == workgraph::graph::Status::InProgress)
-        {
-            " (live)"
-        } else {
-            ""
-        };
-        let label = match app.viewing_iteration {
-            Some(idx) => format!("{}/{}", idx + 1, total),
-            None => format!("{}/{}{}", total, total, live_suffix),
-        };
-
-        // ◀ arrow: clickable if not at oldest (i.e., viewing_iteration is not Some(0) when set,
-        // or there are archives when viewing current)
-        let can_go_prev = match app.viewing_iteration {
-            None => !app.iteration_archives.is_empty(), // can go to last archive
-            Some(idx) => idx > 0,                       // can go to previous archive
-        };
-        // ▶ arrow: clickable if not at current (viewing_iteration is Some and not at end)
-        let can_go_next = match app.viewing_iteration {
-            Some(idx) => idx + 1 < app.iteration_archives.len(),
-            None => false, // already at current
-        };
-
-        let left_arrow = if can_go_prev {
-            Span::styled(
-                "◀",
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            )
-        } else {
-            Span::styled("◀", Style::default().fg(Color::DarkGray))
-        };
-        let right_arrow = if can_go_next {
-            Span::styled(
-                "▶",
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            )
-        } else {
-            Span::styled("▶", Style::default().fg(Color::DarkGray))
-        };
-
-        let middle_text = format!(" iter {} ", label);
-
-        // Build the line: left arrow | center | right arrow
-        // We want them roughly positioned: ◀ on left side, ▶ on right side
-        let usable_width = ha.width.saturating_sub(2) as usize;
-        let center_len = middle_text.len();
-        // Distribute remaining space between/around the arrows
-        let arrow_width = 2; // ◀ or ▶
-        let gap = 2;
-        let side_width = (usable_width.saturating_sub(center_len + arrow_width * 2 + gap * 2)) / 2;
-
-        let line = Line::from(vec![
-            left_arrow,
-            Span::raw(" ".repeat(side_width.max(1))),
-            Span::styled(
-                middle_text,
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" ".repeat(side_width.max(1))),
-            right_arrow,
-        ]);
-        frame.render_widget(
-            Paragraph::new(line).style(Style::default().bg(Color::Rgb(15, 15, 25))),
-            ha,
-        );
+        app.iter_nav_prev_zone = layout.prev_zone;
+        app.iter_nav_next_zone = layout.next_zone;
     } else {
         app.last_iter_nav_area = Rect::default();
+        app.iter_nav_prev_zone = Rect::default();
+        app.iter_nav_next_zone = Rect::default();
     }
 
     // Build visible lines: filter out content of collapsed sections, add ▸/▾ indicators.
@@ -15866,5 +15918,199 @@ mod tests {
         .unwrap();
         let app = VizApp::new(wg_dir, crate::commands::viz::VizOptions::default(), Some(false), None, true);
         assert!(app.is_light_theme, "VizApp::new with color_theme='light' must set is_light_theme=true");
+    }
+
+    /// Detail tab iteration nav: prev/next click segments must always be at
+    /// least 3 cells wide so mouse precision isn't required, regardless of
+    /// the bar's overall width (very narrow detail panes included).
+    #[test]
+    fn iter_nav_segments_min_width_three_cells() {
+        for width in [1u16, 5, 10, 29, 30, 59, 60, 100, 200] {
+            let (left, right) = iter_nav_segments(width);
+            let lw = left.chars().count();
+            let rw = right.chars().count();
+            assert!(
+                lw >= 3,
+                "left segment for width {} must be ≥ 3 cells, got {} ({:?})",
+                width,
+                lw,
+                left
+            );
+            assert!(
+                rw >= 3,
+                "right segment for width {} must be ≥ 3 cells, got {} ({:?})",
+                width,
+                rw,
+                right
+            );
+        }
+    }
+
+    /// At wider widths the segments should grow to include "Prev"/"Next"
+    /// labels — making the click affordance visible and the segments
+    /// substantially wider than the absolute 3-cell minimum.
+    #[test]
+    fn iter_nav_segments_widen_for_labels_when_room() {
+        let (left, right) = iter_nav_segments(80);
+        assert!(
+            left.contains("Prev"),
+            "wide bar should label the prev segment: {:?}",
+            left
+        );
+        assert!(
+            right.contains("Next"),
+            "wide bar should label the next segment: {:?}",
+            right
+        );
+    }
+
+    /// Render the iteration bar into a test buffer and verify the click
+    /// zones it returns: each must be at least 3 cells wide, and the prev
+    /// zone must sit at the bar's left edge while the next zone sits at
+    /// the right edge — those are the contracts the click handler relies
+    /// on.
+    #[test]
+    fn render_iter_bar_zones_match_segment_layout() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let backend = TestBackend::new(80, 3);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 1,
+        };
+        let mut layout_opt = None;
+        terminal
+            .draw(|f| {
+                let layout = render_detail_iteration_bar(
+                    f,
+                    area,
+                    "Iteration 2 of 3 · started 14:23 · archived",
+                    /*can_go_prev*/ true,
+                    /*can_go_next*/ true,
+                );
+                layout_opt = Some(layout);
+            })
+            .unwrap();
+
+        let layout = layout_opt.unwrap();
+        assert!(
+            layout.prev_zone.width >= 3,
+            "prev zone must be ≥ 3 cells: {:?}",
+            layout.prev_zone
+        );
+        assert!(
+            layout.next_zone.width >= 3,
+            "next zone must be ≥ 3 cells: {:?}",
+            layout.next_zone
+        );
+        assert_eq!(
+            layout.prev_zone.x, area.x,
+            "prev zone must start at the bar's left edge"
+        );
+        assert_eq!(
+            layout.next_zone.x + layout.next_zone.width,
+            area.x + area.width,
+            "next zone must end at the bar's right edge"
+        );
+        // Zones must not overlap.
+        assert!(
+            layout.prev_zone.x + layout.prev_zone.width <= layout.next_zone.x,
+            "prev and next zones must not overlap: prev={:?}, next={:?}",
+            layout.prev_zone,
+            layout.next_zone
+        );
+    }
+
+    /// The bar's center label should reach the rendered buffer — not be
+    /// blank — and should mention the iteration number, the total, and the
+    /// outcome / live state. This is the core regression guard against
+    /// the "bar is just a blank line, kind of crap" complaint.
+    #[test]
+    fn render_iter_bar_label_visible_in_buffer() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let backend = TestBackend::new(80, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 1,
+        };
+        terminal
+            .draw(|f| {
+                let _ = render_detail_iteration_bar(
+                    f,
+                    area,
+                    "Iteration 2 of 3 · started 14:23 · archived",
+                    true,
+                    true,
+                );
+            })
+            .unwrap();
+
+        // Capture the rendered text by walking the test buffer.
+        let buf = terminal.backend().buffer();
+        let mut row0 = String::new();
+        for x in 0..80u16 {
+            row0.push_str(buf[(x, 0)].symbol());
+        }
+        // The label content should be present somewhere on the bar.
+        assert!(
+            row0.contains("Iteration 2 of 3"),
+            "rendered bar must include 'Iteration N of M': {:?}",
+            row0
+        );
+        assert!(
+            row0.contains("archived"),
+            "rendered bar must include outcome / state: {:?}",
+            row0
+        );
+        // Both arrow glyphs visible (clickable affordance).
+        assert!(
+            row0.contains('◀'),
+            "rendered bar must include ◀: {:?}",
+            row0
+        );
+        assert!(
+            row0.contains('▶'),
+            "rendered bar must include ▶: {:?}",
+            row0
+        );
+    }
+
+    /// Render at a narrow width (< 30) and verify both segments still
+    /// reach the 3-cell minimum and stay non-overlapping.
+    #[test]
+    fn render_iter_bar_narrow_width_still_clickable() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let backend = TestBackend::new(20, 3);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 20,
+            height: 1,
+        };
+        let mut layout_opt = None;
+        terminal
+            .draw(|f| {
+                let layout =
+                    render_detail_iteration_bar(f, area, "iter 1/2", true, false);
+                layout_opt = Some(layout);
+            })
+            .unwrap();
+
+        let layout = layout_opt.unwrap();
+        assert!(layout.prev_zone.width >= 3);
+        assert!(layout.next_zone.width >= 3);
+        assert!(layout.prev_zone.x + layout.prev_zone.width <= layout.next_zone.x);
     }
 }

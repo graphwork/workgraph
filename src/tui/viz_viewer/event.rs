@@ -4065,41 +4065,31 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                 && app.last_iter_nav_area.contains(pos)
                 && app.right_panel_tab == RightPanelTab::Detail
             {
-                // Click on ◀ ▶ iteration navigation in Detail tab header.
-                // Layout (left-aligned): ◀ | padding | " iter X/Y " | padding | ▶
+                // Click on the Detail tab iteration nav bar. The bar is
+                // split into three zones — prev segment (clickable as ◀),
+                // center label (no click action), next segment (clickable
+                // as ▶). Each clickable segment is at least 3 cells wide
+                // so mouse precision isn't required.
                 app.focused_panel = FocusedPanel::RightPanel;
-                let col = column.saturating_sub(app.last_iter_nav_area.x) as usize;
                 let total = app.iteration_archives.len() + 1;
-                let usable_width = app.last_iter_nav_area.width.saturating_sub(2) as usize;
-                let center_len = format!(" iter {}/{} ", total, total).len();
-                let arrow_width = 2;
-                let gap = 2;
-                let side_width =
-                    (usable_width.saturating_sub(center_len + arrow_width * 2 + gap * 2)) / 2;
-                let pad = side_width.max(1);
-
-                // ◀ at 0, padding 1..pad, middle (pad+1)..(pad+center_len), padding, ▶
-                let left_zone_end = pad;
-                let right_zone_start = 1 + pad + center_len;
-
-                if col <= left_zone_end {
-                    if app.iteration_prev() {
-                        handle_iteration_change(app);
-                        let msg = match app.viewing_iteration {
-                            Some(idx) => format!("Viewing iteration {}/{}", idx + 1, total),
-                            None => format!("Viewing current ({}/{})", total, total),
-                        };
-                        app.push_toast(msg, super::state::ToastSeverity::Info);
-                    }
-                } else if col >= right_zone_start {
-                    if app.iteration_next() {
-                        handle_iteration_change(app);
-                        let msg = match app.viewing_iteration {
-                            Some(idx) => format!("Viewing iteration {}/{}", idx + 1, total),
-                            None => format!("Viewing current ({}/{})", total, total),
-                        };
-                        app.push_toast(msg, super::state::ToastSeverity::Info);
-                    }
+                let prev_hit = app.iter_nav_prev_zone.width > 0
+                    && app.iter_nav_prev_zone.contains(pos);
+                let next_hit = app.iter_nav_next_zone.width > 0
+                    && app.iter_nav_next_zone.contains(pos);
+                if prev_hit && app.iter_can_go_prev() && app.iteration_prev() {
+                    handle_iteration_change(app);
+                    let msg = match app.viewing_iteration {
+                        Some(idx) => format!("Viewing iteration {}/{}", idx + 1, total),
+                        None => format!("Viewing current ({}/{})", total, total),
+                    };
+                    app.push_toast(msg, super::state::ToastSeverity::Info);
+                } else if next_hit && app.iter_can_go_next() && app.iteration_next() {
+                    handle_iteration_change(app);
+                    let msg = match app.viewing_iteration {
+                        Some(idx) => format!("Viewing iteration {}/{}", idx + 1, total),
+                        None => format!("Viewing current ({}/{})", total, total),
+                    };
+                    app.push_toast(msg, super::state::ToastSeverity::Info);
                 }
             } else if in_right_content && app.right_panel_tab == RightPanelTab::Detail {
                 // Click in Detail tab: toggle section collapse if clicking a header.

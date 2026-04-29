@@ -5000,8 +5000,15 @@ pub struct VizApp {
     #[allow(dead_code)]
     pub last_log_new_output_area: Rect,
 
-    /// Hit-test area for the ◀ ▶ iteration navigation arrows in the Detail tab header.
+    /// Hit-test area for the entire iteration navigation bar in the Detail tab header.
+    /// Used to short-circuit pass-through to other detail-tab handlers.
     pub last_iter_nav_area: Rect,
+    /// Hit-test area for the "previous iteration" segment of the Detail tab nav bar.
+    /// Always at least 3 cells wide when visible so mouse precision isn't required.
+    pub iter_nav_prev_zone: Rect,
+    /// Hit-test area for the "next iteration" segment of the Detail tab nav bar.
+    /// Always at least 3 cells wide when visible.
+    pub iter_nav_next_zone: Rect,
 
     // ── Touch echo (click/touch visual feedback) ──
     /// Whether touch echo indicators are enabled (toggled with `*`).
@@ -5320,6 +5327,8 @@ impl VizApp {
             last_panel_hscrollbar_area: Rect::default(),
             last_log_new_output_area: Rect::default(),
             last_iter_nav_area: Rect::default(),
+            iter_nav_prev_zone: Rect::default(),
+            iter_nav_next_zone: Rect::default(),
             touch_echo_enabled: false,
             touch_echoes: Vec::new(),
             has_keyboard_enhancement: false,
@@ -8830,6 +8839,77 @@ impl VizApp {
         }
     }
 
+    /// True iff prev-iteration navigation would change the view from the
+    /// currently-displayed iteration. Used to gate the click handler and
+    /// to gray out the prev arrow when it has nothing to do.
+    pub fn iter_can_go_prev(&self) -> bool {
+        if self.iteration_archives.is_empty() {
+            return false;
+        }
+        match self.viewing_iteration {
+            None => true, // viewing live, can drop to most recent archive
+            Some(idx) => idx > 0,
+        }
+    }
+
+    /// True iff next-iteration navigation would change the view. Mirrors
+    /// `iteration_next()` — clicking ▶ from the last archive transitions
+    /// to live (`None`), so that case is also "can go next".
+    pub fn iter_can_go_next(&self) -> bool {
+        if self.iteration_archives.is_empty() {
+            return false;
+        }
+        match self.viewing_iteration {
+            None => false, // already on live
+            Some(_) => true,
+        }
+    }
+
+    /// Build the informative center label shown in the Detail tab iteration
+    /// nav bar: e.g. `"Iteration 2 of 3 · started 14:23 · archived"` or
+    /// `"Iteration 3 of 3 · live"`. The label tells the user (a) which
+    /// iteration is being displayed, (b) how many exist total, (c) when it
+    /// started if known, and (d) its outcome / live state.
+    pub fn iteration_bar_label(&self) -> String {
+        let total = self.iteration_archives.len() + 1;
+        let task_status = self.hud_detail.as_ref().map(|d| d.task_status);
+        let (display_idx, started_iso) = match self.viewing_iteration {
+            Some(idx) => (
+                idx + 1,
+                self.iteration_archives
+                    .get(idx)
+                    .map(|(name, _)| name.clone()),
+            ),
+            None => (total, None),
+        };
+        let status_text = match self.viewing_iteration {
+            Some(_) => "archived".to_string(),
+            None => match task_status {
+                Some(Status::InProgress) => "live".to_string(),
+                Some(Status::Done) => "done".to_string(),
+                Some(Status::Failed) => "failed".to_string(),
+                Some(Status::Abandoned) => "abandoned".to_string(),
+                Some(Status::Waiting) => "waiting".to_string(),
+                Some(Status::Blocked) => "blocked".to_string(),
+                Some(Status::PendingValidation) => "pending-validation".to_string(),
+                Some(Status::PendingEval) => "pending-eval".to_string(),
+                Some(Status::Incomplete) => "incomplete".to_string(),
+                Some(Status::Open) => "open".to_string(),
+                None => "current".to_string(),
+            },
+        };
+        let started_short = started_iso
+            .as_deref()
+            .and_then(|iso| chrono::DateTime::parse_from_rfc3339(iso).ok())
+            .map(|dt| dt.with_timezone(&chrono::Local).format("%H:%M").to_string());
+        let mut parts: Vec<String> = vec![format!("Iteration {} of {}", display_idx, total)];
+        if let Some(s) = started_short {
+            parts.push(format!("started {}", s));
+        }
+        parts.push(status_text);
+        parts.join(" · ")
+    }
+
     /// Returns a label describing the current iteration view, if any.
     /// E.g., "iter 2/5" (archive), "iter 5/5 (live)" (live, in-progress),
     /// "iter 5/5 (last)" (live slot but task is done — same content as
@@ -9745,6 +9825,8 @@ impl VizApp {
             last_panel_hscrollbar_area: Rect::default(),
             last_log_new_output_area: Rect::default(),
             last_iter_nav_area: Rect::default(),
+            iter_nav_prev_zone: Rect::default(),
+            iter_nav_next_zone: Rect::default(),
             touch_echo_enabled: false,
             touch_echoes: Vec::new(),
             has_keyboard_enhancement: false,
@@ -18151,6 +18233,90 @@ mod hud_tests {
         assert!(
             has_iter_header,
             "Archived iteration should show labeled output section"
+        );
+    }
+
+    #[test]
+    fn iter_can_go_prev_next_states() {
+        // Empty archives: neither direction is enabled.
+        let (viz, _, _tmp) = build_chain_plus_isolated();
+        let app = build_app(&viz, "a", _tmp.path());
+        assert!(!app.iter_can_go_prev());
+        assert!(!app.iter_can_go_next());
+
+        // 3 archives + live: from None (live) prev is enabled, next is not.
+        let (viz, _, _tmp) = build_cyclic_task_with_archives(3);
+        let mut app = build_app(&viz, "cycle-task", _tmp.path());
+        app.load_hud_detail();
+        assert!(app.viewing_iteration.is_none());
+        assert!(app.iter_can_go_prev(), "from live, prev → most recent archive");
+        assert!(!app.iter_can_go_next(), "already at live, next is no-op");
+
+        // From archive 0 (oldest): prev is no-op, next → archive 1.
+        app.viewing_iteration = Some(0);
+        assert!(!app.iter_can_go_prev());
+        assert!(app.iter_can_go_next());
+
+        // From last archive (idx 2): prev → archive 1, next → live.
+        app.viewing_iteration = Some(2);
+        assert!(app.iter_can_go_prev());
+        assert!(
+            app.iter_can_go_next(),
+            "from last archive, next must drop to live (this was previously broken)"
+        );
+
+        // From middle archive: both directions work.
+        app.viewing_iteration = Some(1);
+        assert!(app.iter_can_go_prev());
+        assert!(app.iter_can_go_next());
+    }
+
+    #[test]
+    fn iteration_bar_label_includes_metadata() {
+        let (viz, _, _tmp) = build_cyclic_task_with_archives(2);
+        let mut app = build_app(&viz, "cycle-task", _tmp.path());
+        app.load_hud_detail();
+
+        // Default: viewing live (None) on InProgress task → "Iteration 3 of 3 · live".
+        // (2 archives + 1 live slot = 3 total)
+        let label = app.iteration_bar_label();
+        assert!(
+            label.contains("Iteration 3 of 3"),
+            "label should identify which iteration: {}",
+            label
+        );
+        assert!(
+            label.contains("live"),
+            "InProgress task on live slot should show 'live': {}",
+            label
+        );
+
+        // Switch to archive 0 → "Iteration 1 of 3 · started HH:MM · archived"
+        app.viewing_iteration = Some(0);
+        let label = app.iteration_bar_label();
+        assert!(
+            label.contains("Iteration 1 of 3"),
+            "archive 0 should display as iteration 1 of 3: {}",
+            label
+        );
+        assert!(
+            label.contains("archived"),
+            "archive should be marked archived: {}",
+            label
+        );
+        assert!(
+            label.contains("started"),
+            "archive label should include start time: {}",
+            label
+        );
+
+        // Switch to archive 1 → "Iteration 2 of 3"
+        app.viewing_iteration = Some(1);
+        let label = app.iteration_bar_label();
+        assert!(
+            label.contains("Iteration 2 of 3"),
+            "archive 1 should display as iteration 2 of 3: {}",
+            label
         );
     }
 
