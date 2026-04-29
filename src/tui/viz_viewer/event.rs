@@ -474,6 +474,55 @@ fn handle_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
         return;
     }
 
+    // Scroll mode: intercept all keys when the user has entered Ctrl+]
+    // scroll mode on the active chat PTY pane. The inner PTY must NOT
+    // receive any keys while scroll mode is active.
+    if let InputMode::ScrollMode { task_id } = &app.input_mode.clone() {
+        let task_id = task_id.clone();
+        // Auto-exit if PTY pane focus has shifted away (e.g. mouse click on graph).
+        let still_valid = app.chat_pty_mode
+            && app.chat_pty_forwards_stdin
+            && app.right_panel_tab == RightPanelTab::Chat
+            && app.focused_panel == FocusedPanel::RightPanel
+            && !app.chat_pty_observer;
+        if !still_valid {
+            app.input_mode = InputMode::Normal;
+            // fall through to normal key handling below
+        } else {
+            let is_exit = matches!(code, KeyCode::Esc | KeyCode::Char('q'))
+                || (matches!(code, KeyCode::Char(']'))
+                    && modifiers.contains(KeyModifiers::CONTROL));
+            if is_exit {
+                app.input_mode = InputMode::Normal;
+            } else {
+                let page = (app.last_right_content_area.height as usize).max(10);
+                let half = (page / 2).max(5);
+                if let Some(pane) = app.task_panes.get_mut(&task_id) {
+                    match code {
+                        KeyCode::PageUp if modifiers.is_empty() => pane.scroll_up(page),
+                        KeyCode::PageDown if modifiers.is_empty() => pane.scroll_down(page),
+                        KeyCode::Up if modifiers.is_empty() => pane.scroll_up(1),
+                        KeyCode::Down if modifiers.is_empty() => pane.scroll_down(1),
+                        KeyCode::Char('k') if modifiers.is_empty() => pane.scroll_up(1),
+                        KeyCode::Char('j') if modifiers.is_empty() => pane.scroll_down(1),
+                        KeyCode::Home if modifiers.is_empty() => pane.scroll_to_top(),
+                        KeyCode::Char('g') if modifiers.is_empty() => pane.scroll_to_top(),
+                        KeyCode::End if modifiers.is_empty() => pane.scroll_to_bottom(),
+                        KeyCode::Char('G') if modifiers.is_empty() => pane.scroll_to_bottom(),
+                        KeyCode::Char('u') if modifiers.contains(KeyModifiers::CONTROL) => {
+                            pane.scroll_up(half)
+                        }
+                        KeyCode::Char('d') if modifiers.contains(KeyModifiers::CONTROL) => {
+                            pane.scroll_down(half)
+                        }
+                        _ => {} // swallow — do NOT forward to PTY
+                    }
+                }
+            }
+            return;
+        }
+    }
+
     // Vendor-CLI PTY: forward every keystroke to the embedded child's
     // stdin. Vendor CLIs (native wg nex REPL, claude, codex) read
     // stdin directly. Without this branch keys flow into our own
@@ -510,6 +559,13 @@ fn handle_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
         // implement-tui-command).
         let is_toggle =
             matches!(code, KeyCode::Char('t')) && modifiers.contains(KeyModifiers::CONTROL);
+        let is_scroll_toggle =
+            matches!(code, KeyCode::Char(']')) && modifiers.contains(KeyModifiers::CONTROL);
+        if is_scroll_toggle {
+            let task_id = workgraph::chat_id::format_chat_task_id(app.active_coordinator_id);
+            app.input_mode = InputMode::ScrollMode { task_id };
+            return;
+        }
         let is_scroll = matches!(
             code,
             KeyCode::PageUp | KeyCode::PageDown | KeyCode::Home | KeyCode::End
@@ -600,6 +656,9 @@ fn handle_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
         InputMode::ConfigEdit => handle_config_edit_input(app, code, modifiers),
         InputMode::SettingsEdit => handle_settings_edit_input(app, code, modifiers),
         InputMode::Launcher => handle_launcher_input(app, code, modifiers),
+        // ScrollMode is handled before this dispatch (early return above).
+        // If we reach here, still_valid was false and input_mode was reset to Normal.
+        InputMode::ScrollMode { .. } => handle_normal_key(app, code, modifiers),
         InputMode::Normal => {
             // Also check legacy search_active flag for backward compat
             if app.search_active {

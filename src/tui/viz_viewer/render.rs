@@ -3471,6 +3471,39 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
             // Pane gone (exited or never spawned); fall through to
             // the normal renderer so the user still sees chat content.
         }
+        // Scroll mode banner: overlay a one-row hint at the top of msg_area.
+        if matches!(&app.input_mode, InputMode::ScrollMode { task_id: tid } if *tid == task_id)
+            && msg_area.height > 1
+        {
+            let scroll_offset = app
+                .task_panes
+                .get(&task_id)
+                .map(|p| p.scrollback())
+                .unwrap_or(0);
+            let banner = format!(
+                " SCROLL MODE  ↑↓ line  PgUp/PgDn page  g/G top/bot  Ctrl+]/q/Esc exit  ↓{} ",
+                scroll_offset
+            );
+            let banner_area = Rect {
+                x: msg_area.x,
+                y: msg_area.y,
+                width: msg_area.width,
+                height: 1,
+            };
+            let buf = frame.buffer_mut();
+            let banner_style = Style::default()
+                .fg(Color::Black)
+                .bg(Color::Yellow)
+                .add_modifier(Modifier::BOLD);
+            let banner_chars: Vec<char> = banner.chars().collect();
+            for col in 0..banner_area.width as usize {
+                let cx = banner_area.x + col as u16;
+                let ch = banner_chars.get(col).copied().unwrap_or(' ');
+                let cell = &mut buf[(cx, banner_area.y)];
+                cell.set_char(ch);
+                cell.set_style(banner_style);
+            }
+        }
         // Fall through to the input area rendering below — skip the
         // message-widget code path entirely when the pane was drawn.
         if app.task_panes.contains_key(&task_id) {
@@ -7668,9 +7701,13 @@ fn action_hints_parts(app: &VizApp) -> (&str, &str, Color, Vec<(&str, &str)>) {
                         // is Ctrl+T to enter command mode. Show the
                         // appropriate hint depending on whether we are in
                         // PTY focus or have already broken out.
-                        if app.focused_panel == FocusedPanel::RightPanel {
+                        if matches!(app.input_mode, InputMode::ScrollMode { .. }) {
+                            hints.push(("↑↓/PgUp/Dn", "scroll"));
+                            hints.push(("g/G", "top/bot"));
+                            hints.push(("Ctrl+]/q/Esc", "exit scroll"));
+                        } else if app.focused_panel == FocusedPanel::RightPanel {
                             hints.push(("Ctrl+T", "command mode"));
-                            hints.push(("PgUp/Dn", "scroll"));
+                            hints.push(("Ctrl+]", "scroll mode"));
                         } else {
                             hints.push(("Ctrl+T", "back to chat"));
                             hints.push(("n", "new chat"));
@@ -7787,6 +7824,17 @@ fn action_hints_parts(app: &VizApp) -> (&str, &str, Color, Vec<(&str, &str)>) {
                 ("Esc", "cancel"),
             ],
         ),
+        InputMode::ScrollMode { .. } => (
+            "0:Chat",
+            "SCROLL",
+            Color::Yellow,
+            vec![
+                ("↑↓/PgUp/Dn", "scroll"),
+                ("g/G", "top/bot"),
+                ("Ctrl+u/d", "half page"),
+                ("Ctrl+]/q/Esc", "exit"),
+            ],
+        ),
     }
 }
 
@@ -7877,8 +7925,8 @@ fn draw_status_bar(frame: &mut Frame, app: &VizApp, area: Rect) {
 
     let mut spans: Vec<Span> = Vec::new();
 
-    // Modal mode indicator (PTY vs CMD) — leading badge so it's visible
-    // even when terminal is narrow and the status bar gets truncated by
+    // Modal mode indicator (PTY vs CMD vs SCROLL) — leading badge so it's
+    // visible even when terminal is narrow and the status bar gets truncated by
     // the right-aligned service-health pill. Only meaningful when a chat
     // tab is the active right-panel tab and a PTY is rendering.
     // Implementation gate matches `vendor_pty_active` in event.rs.
@@ -7887,7 +7935,15 @@ fn draw_status_bar(frame: &mut Frame, app: &VizApp, area: Rect) {
         && app.chat_pty_forwards_stdin
         && !app.chat_pty_observer
     {
-        if app.focused_panel == FocusedPanel::RightPanel {
+        if matches!(app.input_mode, InputMode::ScrollMode { .. }) {
+            spans.push(Span::styled(
+                " [SCROLL] ",
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        } else if app.focused_panel == FocusedPanel::RightPanel {
             spans.push(Span::styled(
                 " [PTY] ",
                 Style::default()

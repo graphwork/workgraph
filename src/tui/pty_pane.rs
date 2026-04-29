@@ -414,6 +414,14 @@ impl PtyPane {
         !self.auto_follow
     }
 
+    /// Current scrollback offset (lines above live output). 0 means live.
+    pub fn scrollback(&self) -> usize {
+        self.parser
+            .lock()
+            .map(|p| p.screen().scrollback())
+            .unwrap_or(0)
+    }
+
     /// Current vt100 grid dimensions (rows, cols). Useful for tests
     /// that need to verify a pane was spawned at the right size before
     /// the first frame triggers any resize — see fix-pty-scrollback.

@@ -600,3 +600,12 @@ owners = [
 ]
 description = "Pins fix-codex-chat-3: codex chat in wg TUI must (1) render real-time animation frames between user keypresses and (2) NOT stack spinner copies in scrollback as the user scrolls back. Bug 1 = event loop's idle-poll branch never redrew on PTY byte arrivals (refresh interval 1 Hz against codex's 10-20 Hz frames); fix wires per-pane bytes_processed watermark into has_timed_ui_elements. Bug 2 = codex emits each frame as a DEC mode 2026 (BSU/ESU) sync block whose trailing \\r\\n scrolls one row off the top per frame, accumulating in scrollback (vt100 0.16 doesn't implement BSU/ESU); fix intercepts the markers in the reader thread and trims sync-induced scrollback growth via reflow. Runs unit tests for both halves; no live LLM/codex endpoint required (synthesized byte streams matching codex 0.125.0's actual pattern)."
 timeout_seconds = 180
+
+[[scenario]]
+name = "tui_scroll_mode_toggle"
+script = "scenarios/tui_scroll_mode.sh"
+owners = [
+    "implement-tui-scroll",
+]
+description = "Pins the Ctrl+] scroll mode implementation. Runs cargo test for all scroll_mode_tests unit tests which cover: entering scroll mode, all exit keys (Esc/q/Ctrl+]), key-swallowing (letter keys not forwarded to PTY in scroll mode), scroll navigation (PageUp/End), and automatic exit on pane-switch. No live LLM endpoint required."
+timeout_seconds = 120

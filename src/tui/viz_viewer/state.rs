@@ -834,6 +834,9 @@ pub enum InputMode {
     ChatSearch,
     /// Full-pane coordinator launcher (replaces chat view area).
     Launcher,
+    /// Scroll mode on the active chat PTY pane (Ctrl+] toggle).
+    /// Inner PTY receives no input; arrow keys/PgUp/PgDn navigate scrollback.
+    ScrollMode { task_id: String },
 }
 
 /// What action the confirmation dialog is for.
@@ -12892,7 +12895,7 @@ impl VizApp {
         // re-enter chat/message input (Enter, click, 'c', etc.).
         if matches!(
             self.input_mode,
-            InputMode::ChatInput | InputMode::MessageInput
+            InputMode::ChatInput | InputMode::MessageInput | InputMode::ScrollMode { .. }
         ) {
             self.input_mode = InputMode::Normal;
             self.inspector_sub_focus = InspectorSubFocus::ChatHistory;
@@ -13606,6 +13609,13 @@ impl VizApp {
     pub fn close_launcher(&mut self) {
         self.launcher = None;
         self.input_mode = InputMode::Normal;
+    }
+
+    /// Exit scroll mode if currently active, returning to Normal.
+    pub fn exit_scroll_mode_if_active(&mut self) {
+        if matches!(self.input_mode, InputMode::ScrollMode { .. }) {
+            self.input_mode = InputMode::Normal;
+        }
     }
 
     /// Create a coordinator with defaults (Shift+Plus shortcut, skips picker).

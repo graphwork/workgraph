@@ -13,6 +13,9 @@ pub mod trace;
 #[cfg(test)]
 mod editor_tests;
 
+#[cfg(test)]
+mod scroll_mode_tests;
+
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
