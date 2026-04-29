@@ -830,6 +830,73 @@ pub fn run(dir: &Path, options: &VizOptions) -> Result<()> {
     Ok(())
 }
 
+/// JSON-mode entry point. Emits a structured dump of `VizOutput` for use as
+/// a sidecar by external tools (notably `wg html`). The shape:
+///
+/// ```json
+/// {
+///   "text": "<rendered ASCII, may contain ANSI escapes>",
+///   "node_lines": {"task-id": <line_index>, ...},
+///   "task_order": ["task-id", ...],
+///   "forward_edges": {"task-id": ["dependent-id", ...], ...},
+///   "reverse_edges": {"task-id": ["dependency-id", ...], ...},
+///   "char_edges": [
+///     {"line": <usize>, "col": <usize>, "from": "src-id", "to": "tgt-id"},
+///     ...
+///   ],
+///   "cycle_members": {"task-id": ["other-id-in-scc", ...], ...}
+/// }
+/// ```
+pub fn run_json(dir: &Path, options: &VizOptions) -> Result<()> {
+    let output = generate_viz_output(dir, options)?;
+    let text = if let Some(cols) = options.max_columns {
+        ascii::truncate_lines(&output.text, cols)
+    } else {
+        output.text
+    };
+
+    let mut char_edges = Vec::with_capacity(output.char_edge_map.len());
+    for ((line, col), edges) in &output.char_edge_map {
+        for (from, to) in edges {
+            char_edges.push(serde_json::json!({
+                "line": line,
+                "col": col,
+                "from": from,
+                "to": to,
+            }));
+        }
+    }
+    char_edges.sort_by(|a, b| {
+        let la = a.get("line").and_then(|v| v.as_u64()).unwrap_or(0);
+        let lb = b.get("line").and_then(|v| v.as_u64()).unwrap_or(0);
+        let ca = a.get("col").and_then(|v| v.as_u64()).unwrap_or(0);
+        let cb = b.get("col").and_then(|v| v.as_u64()).unwrap_or(0);
+        (la, ca).cmp(&(lb, cb))
+    });
+
+    let cycle_members: serde_json::Map<String, serde_json::Value> = output
+        .cycle_members
+        .iter()
+        .map(|(k, set)| {
+            let mut v: Vec<&str> = set.iter().map(|s| s.as_str()).collect();
+            v.sort();
+            (k.clone(), serde_json::json!(v))
+        })
+        .collect();
+
+    let payload = serde_json::json!({
+        "text": text,
+        "node_lines": output.node_line_map,
+        "task_order": output.task_order,
+        "forward_edges": output.forward_edges,
+        "reverse_edges": output.reverse_edges,
+        "char_edges": char_edges,
+        "cycle_members": cycle_members,
+    });
+    println!("{}", serde_json::to_string(&payload)?);
+    Ok(())
+}
+
 /// Calculate the critical path (longest dependency chain by hours)
 fn calculate_critical_path(graph: &WorkGraph, active_ids: &HashSet<&str>) -> HashSet<String> {
     // Build forward index: task_id -> tasks that it blocks

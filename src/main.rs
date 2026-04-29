@@ -1348,7 +1348,11 @@ fn main() -> Result<()> {
                     edge_color: resolved_edge_color,
                     max_columns,
                 };
-                commands::viz::run(&workgraph_dir, &options)
+                if cli.json {
+                    commands::viz::run_json(&workgraph_dir, &options)
+                } else {
+                    commands::viz::run(&workgraph_dir, &options)
+                }
             }
         }
         Commands::GraphExport {
@@ -2872,8 +2876,17 @@ fn main() -> Result<()> {
                 commands::dead_agents::run_check(&workgraph_dir, threshold, cli.json)
             }
         }
-        Commands::Html { out, all, since } => {
-            workgraph::html::run(&workgraph_dir, &out, all, since.as_deref(), cli.json)
+        Commands::Html {
+            out,
+            public_only,
+            all: _legacy_all,
+            since,
+        } => {
+            // Defaults: include all tasks (TUI parity). `--public-only` opts
+            // in to the legacy public-only mirror for sanitized output.
+            // `--all` is a deprecated no-op alias.
+            let show_all = !public_only;
+            workgraph::html::run(&workgraph_dir, &out, show_all, since.as_deref(), cli.json)
         }
         Commands::Sweep {
             dry_run,

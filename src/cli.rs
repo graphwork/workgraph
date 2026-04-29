@@ -1922,17 +1922,23 @@ pub enum Commands {
         threshold: Option<u64>,
     },
 
-    /// Render the workgraph as a static HTML site (public tasks only)
+    /// Render the workgraph as a static, clickable HTML viewer (TUI-parity).
     #[command(
-        after_help = "Generates a directory of static HTML/CSS/SVG files mirroring the\nworkgraph state. Only tasks with `visibility = public` are included;\ninternal/peer tasks are excluded.\n\nThe output is rsync-friendly — no JavaScript framework, no runtime\nrequirements. Open `<out>/index.html` in any browser.\n\nExamples:\n  wg html                       # Emit to ./public/\n  wg html --out ./site/         # Emit to a custom directory\n  wg html --out ./public/ --all # Include all tasks (override visibility filter)"
+        after_help = "Generates a directory of static HTML/CSS/JS files mirroring the\nworkgraph state. The page is a read-only sibling of the TUI viewer:\nthe ASCII viz from `wg viz --all` is rendered with clickable task ids\nand status indicators that open a detail overlay matching `wg show`.\nClick a task to highlight its before/after edges in the TUI palette\n(magenta = upstream deps, cyan = downstream consumers).\n\nDefaults: ALL tasks are shown, dark theme follows the OS preference\n(prefers-color-scheme), with a manual toggle that persists in\nlocalStorage. Pass `--public-only` to mirror only `visibility = public`\ntasks (e.g. for a sanitized public mirror).\n\nThe output is rsync-friendly — no JavaScript framework, no server,\nno backend. Open `<out>/index.html` in any browser (file:// works).\n\nExamples:\n  wg html                       # Emit all tasks to ./public/\n  wg html --out ./site/         # Custom output directory\n  wg html --public-only         # Sanitized mirror — public tasks only\n  wg html --since 24h           # Only tasks touched in the last 24h"
     )]
     Html {
         /// Output directory (will be created if missing)
         #[arg(long, default_value = "./public")]
         out: std::path::PathBuf,
 
-        /// Include ALL tasks regardless of visibility (defaults to public-only)
-        #[arg(long)]
+        /// Restrict to tasks with `visibility = public`. Default: include all
+        /// tasks (matches the TUI viewer).
+        #[arg(long, alias = "public", conflicts_with = "all")]
+        public_only: bool,
+
+        /// (Deprecated) Include ALL tasks. This is now the default — kept as
+        /// a no-op for compatibility with older invocations.
+        #[arg(long, hide = true)]
         all: bool,
 
         /// Only include tasks active within this time window (e.g. 1h, 24h, 7d, 30d)
@@ -5043,6 +5049,7 @@ pub fn supports_json(cmd: &Commands) -> bool {
             | Commands::Check
             | Commands::Cleanup { .. }
             | Commands::Cycles
+            | Commands::Viz { .. }
             | Commands::Quickstart
             | Commands::Status { .. }
             | Commands::Stats
