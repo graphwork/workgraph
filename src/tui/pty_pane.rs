@@ -415,6 +415,13 @@ impl PtyPane {
         !self.auto_follow
     }
 
+    /// Current vt100 grid dimensions (rows, cols). Useful for tests
+    /// that need to verify a pane was spawned at the right size before
+    /// the first frame triggers any resize — see fix-pty-scrollback.
+    pub fn dims(&self) -> (u16, u16) {
+        (self.rows, self.cols)
+    }
+
     #[allow(dead_code)]
     pub fn bytes_processed(&self) -> u64 {
         self.bytes_processed.load(Ordering::Relaxed)
@@ -1719,5 +1726,192 @@ mod tests {
             let mut p = parser.lock().unwrap();
             p.screen_mut().set_scrollback(0);
         }
+    }
+
+    /// Reads every scrollback row plus the current visible screen by
+    /// rendering the parser into a TestBackend at offsets max..=0.
+    /// Returns the concatenated text, with each row trimmed and
+    /// joined by '\n'.
+    fn collect_full_scrollback_and_screen(
+        parser: &Arc<Mutex<vt100::Parser>>,
+        rows: u16,
+        cols: u16,
+    ) -> String {
+        let total = test_scrollback_count(parser);
+        let mut out = String::new();
+        for offset in (0..=total).rev() {
+            {
+                let mut p = parser.lock().unwrap();
+                p.screen_mut().set_scrollback(offset);
+            }
+            let frame = render_to_text(parser, rows, cols);
+            out.push_str(&frame);
+            out.push('\n');
+        }
+        {
+            let mut p = parser.lock().unwrap();
+            p.screen_mut().set_scrollback(0);
+        }
+        out
+    }
+
+    /// Repro for fix-pty-scrollback: the chat-tab PTY pane was spawned
+    /// at hardcoded 24×80 and then resized to the actual chat-message
+    /// area on the first frame. The vendor CLI (claude/codex/wg-nex)
+    /// dumps multi-screen history at the small size, then SIGWINCH
+    /// triggers a clear-screen + reprint at the larger size. The
+    /// scrollback ends up containing the same logical lines twice —
+    /// once wrapped at the small width and once unwrapped at the larger
+    /// width — which the user sees as "the chat scrollback loops a bit
+    /// and then settles".
+    ///
+    /// Without the fix: lines whose length straddles 80 cols (wrap)
+    /// but fit within 120 cols (no wrap) appear twice in the rendered
+    /// scrollback because the wrap-at-80 form is in the older rows and
+    /// the no-wrap form is in the SIGWINCH-echo rows + visible screen.
+    /// The existing `scrollback_hidden` dedup hides the K hot-end echo
+    /// rows but does NOT remove the older wrap-at-80 copies.
+    #[test]
+    fn initial_spawn_at_default_then_resize_doubles_long_lines_in_scrollback() {
+        let small_rows = 24u16;
+        let small_cols = 80u16;
+        let large_rows = 30u16;
+        let large_cols = 120u16;
+
+        // Lines longer than small_cols (wrap at 80) but fit in large_cols (no wrap).
+        // 12 lines × ~95 chars each.
+        let lines: Vec<String> = (0..12)
+            .map(|i| {
+                let body = "x".repeat(80);
+                format!("history-line-{:03}-{}", i, body)
+            })
+            .collect();
+        // Sanity: each line is longer than small_cols, shorter than large_cols.
+        for l in &lines {
+            assert!(
+                l.len() > small_cols as usize && l.len() <= large_cols as usize,
+                "test setup: line length {} not in ({}, {}]",
+                l.len(),
+                small_cols,
+                large_cols
+            );
+        }
+
+        let parser = Arc::new(Mutex::new(vt100::Parser::new(
+            small_rows,
+            small_cols,
+            DEFAULT_SCROLLBACK_LINES,
+        )));
+        // Vendor CLI dumps history at small dims (lines wrap at 80 cols).
+        {
+            let mut p = parser.lock().unwrap();
+            for line in &lines {
+                p.process(line.as_bytes());
+                p.process(b"\r\n");
+            }
+        }
+        // First frame triggers resize → SIGWINCH → child reflows: clear + reprint.
+        // Most vendor CLIs reprint the visible region (their TUI), which pushes
+        // wrap-at-old-size content into scrollback and then prints unwrap-at-new-size
+        // content on the new screen.
+        {
+            let mut p = parser.lock().unwrap();
+            p.screen_mut().set_size(large_rows, large_cols);
+            p.process(b"\x1b[2J\x1b[H");
+            for line in &lines {
+                p.process(line.as_bytes());
+                p.process(b"\r\n");
+            }
+        }
+
+        let full = collect_full_scrollback_and_screen(&parser, large_rows, large_cols);
+        // The bug: at least one line appears more than once in the
+        // rendered scrollback because the wrap-at-80 copy survives
+        // alongside the unwrap-at-120 reprint.
+        let mut any_dup = false;
+        for line in &lines {
+            // Use a unique substring per line: the marker prefix.
+            let marker = &line[..16]; // "history-line-NNN"
+            let n = full.matches(marker).count();
+            if n > 1 {
+                any_dup = true;
+                break;
+            }
+        }
+        assert!(
+            any_dup,
+            "expected at least one logical line to appear twice in rendered \
+             scrollback after spawn-at-wrong-size + resize-on-first-frame; \
+             got each line once. Rendered:\n{}",
+            full
+        );
+    }
+
+    /// Fix: spawning the PTY at the actual chat-message area
+    /// dimensions from the start avoids the SIGWINCH reflow entirely.
+    /// Each logical line then appears in scrollback exactly once.
+    /// This is the post-fix-pty-scrollback contract — every chat-tab
+    /// PTY spawn must use the real `msg_area.height`/`msg_area.width`
+    /// (deferred via `consume_pending_chat_pty_spawn` if needed).
+    #[test]
+    fn spawn_at_correct_size_does_not_double_long_lines_in_scrollback() {
+        let large_rows = 30u16;
+        let large_cols = 120u16;
+
+        let lines: Vec<String> = (0..12)
+            .map(|i| {
+                let body = "x".repeat(80);
+                format!("history-line-{:03}-{}", i, body)
+            })
+            .collect();
+
+        let parser = Arc::new(Mutex::new(vt100::Parser::new(
+            large_rows,
+            large_cols,
+            DEFAULT_SCROLLBACK_LINES,
+        )));
+        // Spawned at the right size — vendor CLI prints once, no SIGWINCH echo.
+        {
+            let mut p = parser.lock().unwrap();
+            for line in &lines {
+                p.process(line.as_bytes());
+                p.process(b"\r\n");
+            }
+        }
+
+        let full = collect_full_scrollback_and_screen(&parser, large_rows, large_cols);
+        for line in &lines {
+            let marker = &line[..16];
+            let n = full.matches(marker).count();
+            assert!(
+                n >= 1,
+                "line {:?} should appear at least once in rendered scrollback (got {})",
+                marker,
+                n
+            );
+            assert!(
+                n <= 1,
+                "line {:?} should appear at most once when spawn dims match render dims \
+                 (got {} occurrences). Rendered:\n{}",
+                marker,
+                n,
+                full
+            );
+        }
+    }
+
+    /// `PtyPane::dims()` reports the size the parser/master PTY were
+    /// opened with. The chat-tab spawn path must call
+    /// `consume_pending_chat_pty_spawn(rows, cols)` with the actual
+    /// `msg_area` height/width so the child process sees its initial
+    /// size as the layout area. If a regression slipped a hardcoded
+    /// 24×80 back into the spawn site, this would catch it via the
+    /// reported dims after a fresh spawn.
+    #[test]
+    fn pty_pane_dims_reports_spawn_size() {
+        let pane = PtyPane::spawn("/bin/sh", &["-c", "sleep 60"], &[], 30, 120)
+            .expect("spawn /bin/sh -c sleep");
+        assert_eq!(pane.dims(), (30, 120));
+        // Deliberately drop the pane (sleep gets killed by Drop).
     }
 }

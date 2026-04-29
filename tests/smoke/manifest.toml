@@ -484,6 +484,15 @@ description = "PTY scrollback dedup: verifies that SIGWINCH reflow echo rows are
 timeout_seconds = 120
 
 [[scenario]]
+name = "pty_initial_spawn_no_scrollback_doubling"
+script = "scenarios/pty_initial_spawn_no_scrollback_doubling.sh"
+owners = [
+    "fix-pty-scrollback",
+]
+description = "PTY initial-render scrollback dedup (no resize required): the chat-tab PtyPane was previously spawned at hardcoded 24x80, and the first frame's resize() to the actual msg_area fired SIGWINCH. Vendor CLIs (claude / codex / wg nex) reflowed by clear-screen + reprint, pushing wrap-at-80-cols copies into scrollback alongside the unwrap-at-actual-cols reprint — the user saw 'chat scrollback loops a bit and then settles'. Fix defers the spawn into the render path so the child opens at the real dimensions from the start. Runs unit tests for both the parser-level bug pattern and the deferred-spawn semantics in maybe_auto_enable_chat_pty / consume_pending_chat_pty_spawn."
+timeout_seconds = 180
+
+[[scenario]]
 name = "secret_keyring_round_trip"
 script = "scenarios/secret_keyring_round_trip.sh"
 owners = [

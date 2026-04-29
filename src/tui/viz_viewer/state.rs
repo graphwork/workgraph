@@ -2197,6 +2197,21 @@ pub struct DashboardCoordinatorCard {
     pub accumulated_tokens: u64,
 }
 
+/// Resolved spawn config for the embedded chat PTY pane, captured up
+/// front but not executed until the render path knows the actual chat
+/// message area dimensions. Spawning at the right size eliminates the
+/// SIGWINCH reflow on first resize that would otherwise echo wrap-mismatched
+/// content into vt100 scrollback.
+#[derive(Clone, Debug)]
+pub struct PendingChatPtySpawn {
+    pub task_id: String,
+    pub bin: String,
+    pub args: Vec<String>,
+    pub env: Vec<(String, String)>,
+    pub cwd: Option<PathBuf>,
+    pub executor: String,
+}
+
 /// State for the Dashboard panel tab.
 pub struct DashboardState {
     /// Scroll offset for the dashboard content.
@@ -4711,6 +4726,15 @@ pub struct VizApp {
     /// interactive REPLs that read from stdin.
     pub chat_pty_forwards_stdin: bool,
 
+    /// Resolved spawn config for the chat PTY pane, captured by
+    /// `maybe_auto_enable_chat_pty` and consumed by the render path
+    /// at the first frame that knows the actual chat message area.
+    /// Spawning lazily at the correct dimensions avoids the SIGWINCH
+    /// reflow that would otherwise produce wrap-mismatched echoes in
+    /// scrollback when the user opens a chat tab with multi-screen
+    /// history (fix-pty-scrollback).
+    pub pending_chat_pty_spawn: Option<PendingChatPtySpawn>,
+
     // ── Agent monitor state ──
     pub agent_monitor: AgentMonitorState,
     /// Per-agent JSONL stream state for live activity feed.
@@ -5128,6 +5152,7 @@ impl VizApp {
             chat_pty_observer: false,
             chat_pty_takeover_pending_since: None,
             chat_pty_forwards_stdin: false,
+            pending_chat_pty_spawn: None,
             agent_monitor: AgentMonitorState::default(),
             agent_streams: HashMap::new(),
             service_health: ServiceHealthState::default(),
@@ -9475,6 +9500,7 @@ impl VizApp {
             chat_pty_observer: false,
             chat_pty_takeover_pending_since: None,
             chat_pty_forwards_stdin: false,
+            pending_chat_pty_spawn: None,
             agent_monitor: AgentMonitorState::default(),
             agent_streams: HashMap::new(),
             service_health: ServiceHealthState::default(),
@@ -12965,7 +12991,6 @@ impl VizApp {
             };
         self.chat_pty_observer = observer_mode && executor == "native";
 
-        let args_ref: Vec<&str> = args_owned.iter().map(String::as_str).collect();
         let mut env: Vec<(String, String)> = vec![
             (
                 "WG_DIR".to_string(),
@@ -12988,38 +13013,85 @@ impl VizApp {
             env.push(("WG_MODEL".to_string(), m.clone()));
         }
 
+        // Defer the actual spawn to the render path so the PTY child's
+        // initial size matches the chat message area exactly. Spawning
+        // at hardcoded 24×80 here and resizing on the first frame fires
+        // SIGWINCH; vendor CLIs reflow by clear-screen-and-reprint, which
+        // pushes the wrap-at-old-size content into vt100 scrollback as
+        // duplicates of the new wrap-at-new-size visible region. The
+        // render path knows msg_area dimensions and calls
+        // `consume_pending_chat_pty_spawn` with them — first paint is
+        // already at the right size, no SIGWINCH echo, no scrollback
+        // duplicates (fix-pty-scrollback).
+        self.pending_chat_pty_spawn = Some(PendingChatPtySpawn {
+            task_id,
+            bin,
+            args: args_owned,
+            env,
+            cwd: cwd_opt,
+            executor: executor.clone(),
+        });
+        self.chat_pty_mode = true;
+        self.chat_pty_forwards_stdin = true;
+        // Shift focus into the right panel so keystrokes route
+        // to the PTY (matches `toggle_chat_pty_mode` on Ctrl+T).
+        // Without this, the graph panel owns keys and hotkeys
+        // like 'e' fire graph-side dialogs instead of reaching
+        // `wg nex` inside the pane.
+        self.focused_panel = FocusedPanel::RightPanel;
+    }
+
+    /// Consume `pending_chat_pty_spawn` and spawn the PTY pane at the
+    /// given dimensions. Called from the chat-tab render path once
+    /// `msg_area` is known. Idempotent — does nothing if there is no
+    /// pending spawn, the pane already exists, or `rows`/`cols` are
+    /// zero (e.g. before the first frame populates layout). Returns
+    /// true iff a new pane was successfully spawned.
+    pub fn consume_pending_chat_pty_spawn(&mut self, rows: u16, cols: u16) -> bool {
+        if rows == 0 || cols == 0 {
+            return false;
+        }
+        let Some(pending) = self.pending_chat_pty_spawn.take() else {
+            return false;
+        };
+        if self
+            .task_panes
+            .get_mut(&pending.task_id)
+            .map(|p| p.is_alive())
+            .unwrap_or(false)
+        {
+            // A pane already exists for this task — drop the pending
+            // request without respawning.
+            return false;
+        }
+        self.task_panes.remove(&pending.task_id);
+
+        let args_ref: Vec<&str> = pending.args.iter().map(String::as_str).collect();
         let spawn_result = crate::tui::pty_pane::PtyPane::spawn_in(
-            &bin,
+            &pending.bin,
             &args_ref,
-            &env,
-            cwd_opt.as_deref(),
-            24,
-            80,
+            &pending.env,
+            pending.cwd.as_deref(),
+            rows,
+            cols,
         );
         match spawn_result {
             Ok(pane) => {
-                self.task_panes.insert(task_id, pane);
+                self.task_panes.insert(pending.task_id, pane);
                 self.chat_pty_mode = true;
-                // All three PTY modes run interactive REPLs that
-                // read from stdin: native wg nex (rustyline),
-                // claude, codex. Forward keystrokes directly.
                 self.chat_pty_forwards_stdin = true;
-                // Shift focus into the right panel so keystrokes route
-                // to the PTY (matches `toggle_chat_pty_mode` on Ctrl+T).
-                // Without this, the graph panel owns keys and hotkeys
-                // like 'e' fire graph-side dialogs instead of reaching
-                // `wg nex` inside the pane.
-                self.focused_panel = FocusedPanel::RightPanel;
+                true
             }
             Err(e) => {
                 eprintln!(
                     "[tui] auto-enable chat PTY for executor '{}' failed ({}): \
                      falling back to file-tailing. \
                      Is the `{}` binary on PATH?",
-                    executor, e, bin
+                    pending.executor, e, pending.bin
                 );
                 self.chat_pty_mode = false;
                 self.chat_pty_forwards_stdin = false;
+                false
             }
         }
     }
@@ -24005,5 +24077,106 @@ mod chat_pty_executor_resolution_tests {
 
         assert_eq!(executor, "claude");
         assert_eq!(model.as_deref(), Some("claude:sonnet"));
+    }
+}
+
+#[cfg(test)]
+mod chat_pty_deferred_spawn_tests {
+    //! `maybe_auto_enable_chat_pty` defers the actual `PtyPane::spawn`
+    //! to the chat-tab render path so the child process opens its PTY
+    //! at the real `msg_area` dimensions instead of a hardcoded 24×80.
+    //! Without this, the first frame's resize fired a SIGWINCH that the
+    //! vendor CLI honored by clear-screen + reprint — pushing
+    //! wrap-mismatched copies of recent content into vt100 scrollback,
+    //! which the user observed as "the chat scrollback loops a bit and
+    //! then settles" (fix-pty-scrollback).
+
+    use super::*;
+    use crate::commands::viz::VizOutput;
+
+    fn empty_app() -> VizApp {
+        let viz = VizOutput {
+            text: String::new(),
+            node_line_map: HashMap::new(),
+            task_order: Vec::new(),
+            forward_edges: HashMap::new(),
+            reverse_edges: HashMap::new(),
+            char_edge_map: HashMap::new(),
+            cycle_members: HashMap::new(),
+            annotation_map: HashMap::new(),
+        };
+        VizApp::from_viz_output_for_test(&viz)
+    }
+
+    /// `consume_pending_chat_pty_spawn` is a no-op when no spawn is
+    /// pending — the function should return false without panicking.
+    /// This is the steady-state case (pane already spawned and alive).
+    #[test]
+    fn consume_with_no_pending_returns_false() {
+        let mut app = empty_app();
+        assert!(app.pending_chat_pty_spawn.is_none());
+        let spawned = app.consume_pending_chat_pty_spawn(30, 120);
+        assert!(!spawned);
+        assert!(app.pending_chat_pty_spawn.is_none());
+    }
+
+    /// Render is called every frame; the very first frame may report
+    /// `msg_area = (0, 0)` before layout has stabilized. The deferred
+    /// spawn must NOT execute at zero dimensions — that would just
+    /// reintroduce the same wrong-initial-size problem the deferral
+    /// is meant to fix. Pending stays put until a real area arrives.
+    #[test]
+    fn consume_with_zero_dims_keeps_pending() {
+        let mut app = empty_app();
+        app.pending_chat_pty_spawn = Some(PendingChatPtySpawn {
+            task_id: ".chat-1".to_string(),
+            bin: "/bin/false".to_string(),
+            args: vec![],
+            env: vec![],
+            cwd: None,
+            executor: "native".to_string(),
+        });
+        let spawned = app.consume_pending_chat_pty_spawn(0, 80);
+        assert!(!spawned);
+        assert!(
+            app.pending_chat_pty_spawn.is_some(),
+            "pending must be preserved across no-op zero-dim consume calls so a \
+             later frame with real dims can still spawn"
+        );
+        let spawned = app.consume_pending_chat_pty_spawn(24, 0);
+        assert!(!spawned);
+        assert!(app.pending_chat_pty_spawn.is_some());
+    }
+
+    /// When `consume_pending_chat_pty_spawn` succeeds, the spawned
+    /// `PtyPane` reports the dimensions that were passed in (no
+    /// implicit clamp at the chat-tab call site — the PtyPane itself
+    /// applies a 10×40 floor internally on resize). This is the
+    /// post-fix contract: chat-tab spawn dims = msg_area dims.
+    #[test]
+    fn consume_with_real_dims_spawns_at_those_dims() {
+        let mut app = empty_app();
+        app.pending_chat_pty_spawn = Some(PendingChatPtySpawn {
+            task_id: ".chat-test".to_string(),
+            bin: "/bin/sh".to_string(),
+            args: vec!["-c".to_string(), "sleep 60".to_string()],
+            env: vec![],
+            cwd: None,
+            executor: "native".to_string(),
+        });
+        let rows = 30u16;
+        let cols = 120u16;
+        let spawned = app.consume_pending_chat_pty_spawn(rows, cols);
+        assert!(spawned, "spawn should succeed with /bin/sh -c sleep");
+        assert!(app.pending_chat_pty_spawn.is_none());
+        let pane = app
+            .task_panes
+            .get(".chat-test")
+            .expect("pane should be inserted under task_id");
+        assert_eq!(
+            pane.dims(),
+            (rows, cols),
+            "spawn dims must match the area dims passed by the render path"
+        );
     }
 }

@@ -3401,6 +3401,16 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         if !alive {
             app.task_panes.remove(&task_id);
         }
+        // Lazy spawn at the actual msg_area dimensions. If
+        // `maybe_auto_enable_chat_pty` deferred the spawn (because
+        // it was called before any frame had drawn — area unknown),
+        // perform it now that we have real layout dimensions. Spawning
+        // at the right size from the start avoids the SIGWINCH reflow
+        // that would otherwise echo wrap-mismatched content into vt100
+        // scrollback (fix-pty-scrollback).
+        if !app.task_panes.contains_key(&task_id) {
+            app.consume_pending_chat_pty_spawn(msg_area.height, msg_area.width);
+        }
         if let Some(pane) = app.task_panes.get_mut(&task_id) {
             let _ = pane.resize(msg_area.height, msg_area.width);
             let focused = app.focused_panel == super::state::FocusedPanel::RightPanel;
