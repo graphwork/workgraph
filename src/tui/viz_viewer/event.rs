@@ -317,6 +317,24 @@ fn run_event_loop_inner(
             }
         }
 
+        // Chat-exit prompt intercept. When the user presses q / Esc /
+        // Ctrl+C and there are live chat tmux sessions, ask first
+        // whether to leave them running (default — resume next time)
+        // or close them (kill the chat process, no resume). See
+        // docs/design/chat-agent-persistence.md.
+        if app.should_quit
+            && !app.exit_prompt_resolved
+            && !matches!(app.input_mode, InputMode::ExitPrompt(_))
+        {
+            let chats = app.live_chat_tmux_ids();
+            if !chats.is_empty() {
+                app.open_exit_prompt(chats);
+                app.should_quit = false;
+                needs_redraw = true;
+                continue;
+            }
+        }
+
         if app.should_quit {
             return Ok(());
         }
@@ -659,6 +677,7 @@ fn handle_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
         // ScrollMode is handled before this dispatch (early return above).
         // If we reach here, still_valid was false and input_mode was reset to Normal.
         InputMode::ScrollMode { .. } => handle_normal_key(app, code, modifiers),
+        InputMode::ExitPrompt(_) => handle_exit_prompt_input(app, code),
         InputMode::Normal => {
             // Also check legacy search_active flag for backward compat
             if app.search_active {
@@ -872,6 +891,106 @@ fn handle_confirm_input(app: &mut VizApp, code: KeyCode) {
             app.input_mode = InputMode::Normal;
         }
         _ => {}
+    }
+}
+
+/// Handle key input while the chat-exit prompt is open. Two phases:
+///   - Top-level (per_chat_idx is None): a/c/s/Esc/Enter shortcuts
+///     that resolve the whole exit at once or descend to per-chat.
+///   - Per-chat (per_chat_idx is Some(i)): l/c/b/Esc shortcuts that
+///     record a decision for chats[i] and advance.
+fn handle_exit_prompt_input(app: &mut VizApp, code: KeyCode) {
+    let (per_chat_idx, total_chats) = match &app.input_mode {
+        InputMode::ExitPrompt(s) => (s.per_chat_idx, s.chats.len()),
+        _ => return,
+    };
+
+    if per_chat_idx.is_none() {
+        // Main prompt.
+        match code {
+            // Default action: leave running.
+            KeyCode::Enter | KeyCode::Char('a') | KeyCode::Char('A') => {
+                app.resolve_exit_prompt_leave_all();
+            }
+            // Close all.
+            KeyCode::Char('c') | KeyCode::Char('C') => {
+                app.resolve_exit_prompt_close_all();
+            }
+            // Per-chat selection.
+            KeyCode::Char('s') | KeyCode::Char('S') => {
+                app.enter_exit_prompt_per_chat();
+            }
+            // Cancel exit.
+            KeyCode::Esc => {
+                app.cancel_exit_prompt();
+            }
+            _ => {}
+        }
+        return;
+    }
+
+    // Per-chat granular flow.
+    let i = per_chat_idx.unwrap();
+    match code {
+        KeyCode::Char('l') | KeyCode::Char('L') => {
+            // Leave this chat (default), advance.
+            if let InputMode::ExitPrompt(ref mut s) = app.input_mode {
+                if i < s.per_chat_close.len() {
+                    s.per_chat_close[i] = false;
+                }
+                advance_per_chat_or_finish(s, total_chats);
+            }
+            // If we just finished, apply now.
+            if matches!(app.input_mode, InputMode::ExitPrompt(_)) {
+                let done = matches!(
+                    &app.input_mode,
+                    InputMode::ExitPrompt(s) if s.per_chat_idx.is_none()
+                );
+                if done {
+                    app.resolve_exit_prompt_per_chat();
+                }
+            }
+        }
+        KeyCode::Char('c') | KeyCode::Char('C') => {
+            // Close this chat, advance.
+            if let InputMode::ExitPrompt(ref mut s) = app.input_mode {
+                if i < s.per_chat_close.len() {
+                    s.per_chat_close[i] = true;
+                }
+                advance_per_chat_or_finish(s, total_chats);
+            }
+            if matches!(app.input_mode, InputMode::ExitPrompt(_)) {
+                let done = matches!(
+                    &app.input_mode,
+                    InputMode::ExitPrompt(s) if s.per_chat_idx.is_none()
+                );
+                if done {
+                    app.resolve_exit_prompt_per_chat();
+                }
+            }
+        }
+        // Back to main prompt.
+        KeyCode::Char('b') | KeyCode::Char('B') => {
+            if let InputMode::ExitPrompt(ref mut s) = app.input_mode {
+                s.per_chat_idx = None;
+            }
+        }
+        // Cancel exit entirely.
+        KeyCode::Esc => {
+            app.cancel_exit_prompt();
+        }
+        _ => {}
+    }
+}
+
+/// Advance per-chat index; if the user has decided about every chat,
+/// reset `per_chat_idx` to `None` to signal "ready to apply".
+fn advance_per_chat_or_finish(s: &mut crate::tui::viz_viewer::state::ExitPromptState, total: usize) {
+    let next = s.per_chat_idx.map(|i| i + 1).unwrap_or(0);
+    if next >= total {
+        s.per_chat_idx = None;
+    } else {
+        s.per_chat_idx = Some(next);
     }
 }
 

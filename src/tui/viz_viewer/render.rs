@@ -9,7 +9,7 @@ use unicode_width::UnicodeWidthStr;
 use super::state::{
     ActivityEventKind, ChoiceDialogState, ConfigEditKind, ConfigSection,
     ConfirmAction, ControlPanelFocus, CoordinatorArrowHit, CoordinatorPlusHit, CoordinatorTabHit,
-    EndpointTestStatus,
+    EndpointTestStatus, ExitPromptState,
     FocusedPanel, InputMode, LayoutMode, ResponsiveBreakpoint, RightPanelTab, ServiceHealthLevel,
     SettingsEditScope, SinglePanelView, SortMode, TabBarEntryKind, TaskFormField,
     TaskFormState, TextPromptAction, ToastSeverity, VitalsStaleness, VizApp, WAVE_BOLT,
@@ -696,6 +696,8 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
         app.last_dialog_area = draw_confirm_dialog(frame, action);
     } else if let InputMode::ChoiceDialog(ref state) = app.input_mode {
         app.last_dialog_area = draw_choice_dialog(frame, state);
+    } else if let InputMode::ExitPrompt(ref state) = app.input_mode {
+        app.last_dialog_area = draw_exit_prompt(frame, state);
     } else if matches!(app.input_mode, InputMode::CoordinatorPicker) {
         if let Some(ref picker) = app.coordinator_picker {
             app.last_dialog_area =
@@ -6351,6 +6353,177 @@ fn draw_choice_dialog(frame: &mut Frame, state: &ChoiceDialogState) -> Rect {
     area
 }
 
+/// Draw the chat-exit prompt overlay (tmux-persistence UX). Two
+/// layouts: the top-level "leave / close / per-chat" picker, and the
+/// per-chat granular picker shown after the user picks 's'.
+/// Returns the dialog area for mouse hit-testing.
+fn draw_exit_prompt(frame: &mut Frame, state: &ExitPromptState) -> Rect {
+    let size = frame.area();
+    let n = state.chats.len();
+
+    if let Some(idx) = state.per_chat_idx {
+        // Per-chat granular prompt.
+        let chat_id = state.chats.get(idx).copied().unwrap_or(0);
+        let title = format!(
+            " Chat {} of {}: chat-{} ",
+            idx + 1,
+            n,
+            chat_id
+        );
+        let width: u16 = 60.min(size.width.saturating_sub(4));
+        // 4 option lines + 2 description lines + 1 footer + borders
+        let height: u16 = 9;
+        let x = (size.width.saturating_sub(width)) / 2;
+        let y = (size.height.saturating_sub(height)) / 2;
+        let area = Rect::new(x, y, width, height);
+        frame.render_widget(Clear, area);
+        let block = Block::default()
+            .title(title)
+            .borders(Borders::ALL)
+            .border_style(
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            );
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+
+        let lines = vec![
+            Line::from(format!(
+                "What about chat-{}?",
+                chat_id
+            ))
+            .style(Style::default().add_modifier(Modifier::BOLD)),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled(
+                    " [l] ",
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw("Leave running (default — resume next time)"),
+            ]),
+            Line::from(vec![
+                Span::styled(
+                    " [c] ",
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw("Close (kill tmux session — no resume)"),
+            ]),
+            Line::from(vec![
+                Span::styled(
+                    " [b] ",
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw("Back to main exit prompt"),
+            ]),
+            Line::from(vec![
+                Span::styled(
+                    " [Esc]",
+                    Style::default().fg(Color::DarkGray),
+                ),
+                Span::raw(" Cancel exit"),
+            ]),
+        ];
+        frame.render_widget(Paragraph::new(lines), inner);
+        return area;
+    }
+
+    // Top-level prompt.
+    let title = if n == 1 {
+        " 1 active chat — exit? ".to_string()
+    } else {
+        format!(" {} active chats — exit? ", n)
+    };
+    let width: u16 = 64.min(size.width.saturating_sub(4));
+    // header + 4 options + footer (+ borders)
+    let height: u16 = 10;
+    let x = (size.width.saturating_sub(width)) / 2;
+    let y = (size.height.saturating_sub(height)) / 2;
+    let area = Rect::new(x, y, width, height);
+    frame.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        );
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let header = if n == 1 {
+        "You have 1 active chat. What do you want to do?".to_string()
+    } else {
+        format!("You have {} active chats. What do you want to do?", n)
+    };
+
+    let lines = vec![
+        Line::from(header).style(Style::default().add_modifier(Modifier::BOLD)),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(
+                " [a] ",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "Leave all running ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "(default — resume next time)",
+                Style::default().fg(Color::Gray),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                " [c] ",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("Close all ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "(kill tmux sessions — can't resume)",
+                Style::default().fg(Color::Gray),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                " [s] ",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "Select per-chat ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "(decide one at a time)",
+                Style::default().fg(Color::Gray),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(" [Esc]", Style::default().fg(Color::DarkGray)),
+            Span::raw(" Cancel exit  "),
+            Span::styled("[Enter]", Style::default().fg(Color::DarkGray)),
+            Span::raw(" Default (leave all)"),
+        ]),
+    ];
+    frame.render_widget(Paragraph::new(lines), inner);
+    area
+}
+
 /// Draw the coordinator picker overlay. Returns the dialog area.
 fn draw_coordinator_picker(
     frame: &mut Frame,
@@ -7612,6 +7785,17 @@ fn action_hints_parts(app: &VizApp) -> (&str, &str, Color, Vec<(&str, &str)>) {
             "EDIT",
             Color::Yellow,
             vec![("↑↓", "navigate"), ("Enter", "select"), ("Esc", "cancel")],
+        ),
+        InputMode::ExitPrompt(_) => (
+            "Exit",
+            "EDIT",
+            Color::Yellow,
+            vec![
+                ("a", "leave all"),
+                ("c", "close all"),
+                ("s", "per-chat"),
+                ("Esc", "cancel"),
+            ],
         ),
         InputMode::CoordinatorPicker => (
             "Picker",

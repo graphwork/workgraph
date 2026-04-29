@@ -504,11 +504,16 @@ pub fn run_archive(dir: &Path, reference: &str, json: bool) -> Result<()> {
         .with_context(|| "Failed to load graph")?;
     let cid = resolve_chat_id(&graph, reference)
         .with_context(|| format!("No chat matching '{}'", reference))?;
-    if service_is_running(dir) {
+    let result = if service_is_running(dir) {
         crate::commands::service::run_archive_coordinator(dir, cid, json)
     } else {
         archive_chat_direct(dir, cid, json)
-    }
+    };
+    // Tear down the tmux chat session so we don't accumulate orphan
+    // wg-chat-* sessions. Best-effort — the archive itself succeeded
+    // (or failed) before this runs.
+    chat_id::kill_chat_tmux_session_for_id(dir, cid);
+    result
 }
 
 fn archive_chat_direct(dir: &Path, cid: u32, json: bool) -> Result<()> {
@@ -573,11 +578,14 @@ pub fn run_delete(dir: &Path, reference: &str, yes: bool, json: bool) -> Result<
         }
     }
 
-    if service_is_running(dir) {
+    let result = if service_is_running(dir) {
         crate::commands::service::run_delete_coordinator(dir, cid, json)
     } else {
         delete_chat_direct(dir, cid, json)
-    }
+    };
+    // Tear down the tmux chat session if any — see run_archive.
+    chat_id::kill_chat_tmux_session_for_id(dir, cid);
+    result
 }
 
 fn delete_chat_direct(dir: &Path, cid: u32, json: bool) -> Result<()> {
@@ -624,9 +632,17 @@ fn delete_chat_direct(dir: &Path, cid: u32, json: bool) -> Result<()> {
 
 /// `wg chat attach` — open an interactive view of the chat session.
 ///
-/// Defaults to TUI mode when running on a TTY. With `--cli` (or in a
-/// non-TTY) falls back to streaming the outbox to stderr. The CLI
-/// fallback is read-only — to send a message use `wg chat send`.
+/// Preferred path: when a tmux session exists for this chat (TUI was
+/// run with chat-persistence wrappers), `exec tmux attach -t <session>`
+/// hands the user the live vendor CLI directly — including history and
+/// in-flight tool calls. This is the strongest reattach UX and works
+/// from any terminal (no TUI required).
+///
+/// Fallbacks (in order):
+///   1. TUI mode via `chat::run_interactive` when on a TTY + service is
+///      up. Talks to daemon over IPC.
+///   2. Read-only outbox stream (CLI mode). Use `wg chat send` to
+///      enqueue messages.
 pub fn run_attach(dir: &Path, reference: &str, force_cli: bool) -> Result<()> {
     let graph = workgraph::parser::load_graph(&graph_path(dir))
         .with_context(|| "Failed to load graph")?;
@@ -635,6 +651,30 @@ pub fn run_attach(dir: &Path, reference: &str, force_cli: bool) -> Result<()> {
 
     let is_tty = std::io::IsTerminal::is_terminal(&std::io::stdin())
         && std::io::IsTerminal::is_terminal(&std::io::stdout());
+
+    // Try the tmux fast-path first when on a TTY: if the wg-chat-* tmux
+    // session for this chat is alive, attach to it. This is what the
+    // user actually wants for "drop me back into my chat" — no
+    // outbox-tail, no IPC roundtrip. Skip when --cli forced or when not
+    // on a TTY (tmux attach into a pipe would hang).
+    if !force_cli
+        && is_tty
+        && let Some(session) = chat_tmux_session_for_dir(dir, cid)
+        && tmux_session_alive(&session)
+    {
+        eprintln!("Attaching to tmux session: {}", session);
+        let status = std::process::Command::new("tmux")
+            .args(["attach", "-d", "-t", &session])
+            .status()
+            .with_context(|| "Failed to invoke tmux attach")?;
+        if status.success() {
+            return Ok(());
+        }
+        eprintln!(
+            "tmux attach exited with status {:?}; falling back to other modes.",
+            status.code()
+        );
+    }
 
     if !force_cli && is_tty {
         // Interactive REPL via existing chat::run_interactive (talks to
@@ -650,6 +690,26 @@ pub fn run_attach(dir: &Path, reference: &str, force_cli: bool) -> Result<()> {
     } else {
         read_only_attach(dir, cid)
     }
+}
+
+fn chat_tmux_session_for_dir(dir: &Path, cid: u32) -> Option<String> {
+    let project_root = dir.parent().unwrap_or(dir).to_path_buf();
+    let project_tag = project_root.file_name().and_then(|n| n.to_str())?;
+    let chat_ref = format!("chat-{}", cid);
+    Some(workgraph::chat_id::chat_tmux_session_name(
+        project_tag,
+        &chat_ref,
+    ))
+}
+
+fn tmux_session_alive(name: &str) -> bool {
+    std::process::Command::new("tmux")
+        .args(["has-session", "-t", name])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 fn read_only_attach(dir: &Path, cid: u32) -> Result<()> {

@@ -2154,9 +2154,14 @@ pub fn format_detection_summary(det: &DetectionResult) -> String {
     }
 
     if det.tmux {
-        lines.push("  ✓ tmux — ready for `wg server`!".to_string());
+        lines.push(
+            "  ✓ tmux — ready for chat persistence + `wg server`!".to_string(),
+        );
     } else {
-        lines.push("  · tmux — not installed (needed for `wg server`)".to_string());
+        lines.push(
+            "  · tmux — not installed (needed for chat persistence + `wg server`)"
+                .to_string(),
+        );
     }
 
     // API keys

@@ -631,3 +631,13 @@ owners = [
 ]
 description = "Validates the FailedPendingEval state machine: agent-exit-nonzero + auto_evaluate=true → failed-pending-eval; other failure classes go directly to terminal failed; operator wg fail on FailedPendingEval forces terminal; downstream blocked on failed-pending-eval; .evaluate-X system task bypasses the block. No daemon, no LLM."
 timeout_seconds = 60
+
+[[scenario]]
+name = "chat_archive_kills_tmux_session"
+script = "scenarios/chat_archive_kills_tmux_session.sh"
+owners = [
+    "design-chat-agent",
+    "implement-tmux-wrapped",
+]
+description = "Pins the chat-archive -> kill_underlying_session contract from the tmux-persistence design. Manually starts a wg-chat-* tmux session matching the canonical schema, runs wg chat archive, asserts the session is killed within 2 seconds. Skips when tmux is missing."
+timeout_seconds = 60

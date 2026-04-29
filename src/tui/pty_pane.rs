@@ -93,6 +93,13 @@ pub struct PtyPane {
     pub growth_rate_warned: Arc<AtomicBool>,
     #[allow(dead_code)]
     bytes_processed: Arc<AtomicU64>,
+    /// When `Some`, the pane is wrapping a `tmux attach` client whose
+    /// underlying tmux session is named here. The chat process lives
+    /// inside that session, NOT as our direct child — so dropping this
+    /// pane only kills the attach client; the session keeps running.
+    /// Call `kill_underlying_session` to explicitly tear it down (e.g.
+    /// when the user archives / deletes the chat).
+    tmux_session: Option<String>,
     /// Cumulative bytes written from the host TUI to the embedded
     /// child's stdin via `send_key` / `send_text`. Tests use this to
     /// assert that a given event path does NOT forward bytes to the
@@ -317,8 +324,116 @@ impl PtyPane {
             auto_follow: true,
             growth_rate_warned,
             bytes_processed,
+            tmux_session: None,
             input_bytes_written: Arc::new(AtomicU64::new(0)),
         })
+    }
+
+    /// Spawn `command` inside a detached tmux session and return a
+    /// PtyPane attached to it via `tmux attach -t <session>`. When this
+    /// pane drops (TUI exit, panic), only the attach client dies — the
+    /// tmux session keeps the underlying process alive across TUI
+    /// restarts. Use [`kill_underlying_session`] to explicitly tear the
+    /// session down (e.g. when the user archives / deletes the chat).
+    ///
+    /// `session_name` MUST be a valid tmux session id (no whitespace,
+    /// no `:`/`.`). Caller is responsible for namespacing it (e.g.
+    /// `wg-chat-<project>-<chat_ref>`).
+    ///
+    /// If a session named `session_name` already exists (e.g. from a
+    /// prior TUI run), this reattaches to it instead of starting a new
+    /// process — that is the persistence point.
+    ///
+    /// Returns an error if the `tmux` binary is not available; the
+    /// caller is expected to fall back to plain `spawn_in` and warn the
+    /// user.
+    pub fn spawn_via_tmux(
+        session_name: &str,
+        command: &str,
+        args: &[&str],
+        env: &[(String, String)],
+        cwd: Option<&std::path::Path>,
+        rows: u16,
+        cols: u16,
+    ) -> Result<Self> {
+        if !tmux_available() {
+            anyhow::bail!("tmux not available on PATH");
+        }
+        // Sanity-check the session name. tmux session names cannot
+        // contain `:` or `.`; whitespace is also disallowed in our
+        // contract. Bail explicitly so a malformed name doesn't manifest
+        // later as a confusing tmux error.
+        if session_name.is_empty()
+            || session_name
+                .chars()
+                .any(|c| c.is_whitespace() || c == ':' || c == '.')
+        {
+            anyhow::bail!("invalid tmux session name: {:?}", session_name);
+        }
+
+        let session_exists = tmux_has_session(session_name);
+        if !session_exists {
+            // Build `tmux new-session -d -s <name> [-c cwd] [-e K=V ...] -- <bin> [args...]`
+            let mut tmux_args: Vec<String> = vec![
+                "new-session".to_string(),
+                "-d".to_string(),
+                "-s".to_string(),
+                session_name.to_string(),
+            ];
+            if let Some(c) = cwd {
+                tmux_args.push("-c".to_string());
+                tmux_args.push(c.display().to_string());
+            }
+            for (k, v) in env {
+                tmux_args.push("-e".to_string());
+                tmux_args.push(format!("{}={}", k, v));
+            }
+            // Separator + program + program args. tmux's `--` only
+            // works after the session-creation flags — everything after
+            // is passed to the inner shell exec.
+            tmux_args.push("--".to_string());
+            tmux_args.push(command.to_string());
+            for a in args {
+                tmux_args.push(a.to_string());
+            }
+            let status = std::process::Command::new("tmux")
+                .args(&tmux_args)
+                .status()
+                .context("failed to invoke tmux new-session")?;
+            if !status.success() {
+                anyhow::bail!(
+                    "tmux new-session failed (status {:?}) for session '{}'",
+                    status.code(),
+                    session_name
+                );
+            }
+        }
+
+        // Attach client lives in our PTY child. `-d` detaches any other
+        // clients first — single-attach semantics, even if a prior TUI
+        // (or a stray `tmux attach` from a shell) is still glued on.
+        let attach_args = ["attach", "-d", "-t", session_name];
+        let mut pane = Self::spawn_in("tmux", &attach_args, &[], cwd, rows, cols)?;
+        pane.tmux_session = Some(session_name.to_string());
+        Ok(pane)
+    }
+
+    /// Returns the underlying tmux session name if this pane was
+    /// spawned via [`spawn_via_tmux`].
+    pub fn tmux_session(&self) -> Option<&str> {
+        self.tmux_session.as_deref()
+    }
+
+    /// Explicitly tear down the underlying tmux session (and therefore
+    /// the chat process inside it). No-op for non-tmux-wrapped panes.
+    /// Idempotent — safe to call after `Drop` or `kill`.
+    pub fn kill_underlying_session(&mut self) {
+        if let Some(name) = self.tmux_session.clone() {
+            let _ = std::process::Command::new("tmux")
+                .args(["kill-session", "-t", &name])
+                .status();
+            self.tmux_session = None;
+        }
     }
 
     /// Render the current terminal screen as a ratatui widget in
@@ -579,8 +694,17 @@ impl PtyPane {
 
 impl Drop for PtyPane {
     fn drop(&mut self) {
-        // Ensure the child is gone; the reader thread will see EOF
-        // when the master drops after this Drop completes.
+        // Ensure the local PTY child is gone; the reader thread will
+        // see EOF when the master drops after this Drop completes.
+        //
+        // For tmux-wrapped panes the child IS the `tmux attach` client,
+        // not the underlying chat process. Killing the attach client
+        // detaches it cleanly; the tmux server keeps the chat session
+        // alive so a later `wg tui` reattaches to the same session and
+        // the user resumes their conversation. THIS IS THE PERSISTENCE
+        // INVARIANT — Drop must NOT call `kill_underlying_session`. To
+        // discard the chat, callers explicitly invoke that method
+        // (chat archive / delete paths in viz_viewer/state.rs).
         let _ = self.child.kill();
         // Don't join the reader here — `kill` may not have fully
         // flushed yet and we'd block the TUI shutdown. The thread is
@@ -588,6 +712,63 @@ impl Drop for PtyPane {
         // OS reaps it when the process exits.
         let _ = self.reader_thread.take();
     }
+}
+
+/// Cached tmux-availability probe. Cheap (one `which` per process) and
+/// returns false if tmux is not installed; callers fall back to plain
+/// `spawn_in` + a one-time warning.
+pub fn tmux_available() -> bool {
+    use std::sync::OnceLock;
+    static AVAILABLE: OnceLock<bool> = OnceLock::new();
+    *AVAILABLE.get_or_init(|| {
+        std::process::Command::new("tmux")
+            .arg("-V")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    })
+}
+
+/// Returns true if a tmux session with the given name currently exists.
+/// Cheap shell-out — used during `spawn_via_tmux` to decide whether to
+/// create a fresh session or reattach to an existing one.
+pub fn tmux_has_session(name: &str) -> bool {
+    std::process::Command::new("tmux")
+        .args(["has-session", "-t", name])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// List every tmux session whose name starts with `prefix`. Returns an
+/// empty vec if tmux isn't installed or `list-sessions` fails (e.g. no
+/// server running). Used by the chat orphan-sweep to find dangling
+/// `wg-chat-*` sessions whose backing task is gone.
+pub fn tmux_list_sessions_with_prefix(prefix: &str) -> Vec<String> {
+    let out = match std::process::Command::new("tmux")
+        .args(["list-sessions", "-F", "#S"])
+        .output()
+    {
+        Ok(o) if o.status.success() => o,
+        _ => return Vec::new(),
+    };
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter(|l| l.starts_with(prefix))
+        .map(|l| l.to_string())
+        .collect()
+}
+
+/// Tear down a tmux session by name. No-op when the session doesn't
+/// exist. Idempotent.
+pub fn tmux_kill_session(name: &str) {
+    let _ = std::process::Command::new("tmux")
+        .args(["kill-session", "-t", name])
+        .status();
 }
 
 /// Read a single row's content into a UTF-8 byte buffer plus its `wrapped`
@@ -3034,6 +3215,160 @@ sleep 5
                 "drop_recent_k=2 must drop {} (it was offset 1 or 2 in scrollback); got:\n{}",
                 dropped,
                 blob_trim
+            );
+        }
+    }
+
+    /// THE persistence invariant: dropping a tmux-wrapped PtyPane only
+    /// kills the attach client; the underlying tmux session keeps the
+    /// inner process alive. If this assertion ever flips, chat agents
+    /// will die on TUI exit and codex's mid-tool-call rollouts corrupt
+    /// (see docs/design/chat-agent-persistence.md Part A). Skip if tmux
+    /// isn't installed (CI may lack it).
+    #[test]
+    fn drop_does_not_kill_underlying_tmux_session() {
+        if !tmux_available() {
+            eprintln!("tmux not installed — skipping persistence invariant test");
+            return;
+        }
+        // Use a wg-chat-test-* prefix so we land in the same namespace
+        // the orphan sweep targets, and a unique pid+nanos suffix so
+        // parallel test runs don't collide.
+        let suffix = format!(
+            "{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        );
+        let session = format!("wg-chat-test-drop-{}", suffix);
+
+        // Long-running command so the session would survive the TUI
+        // exit point we're modeling.
+        {
+            let pane = PtyPane::spawn_via_tmux(
+                &session,
+                "sh",
+                &["-c", "while true; do sleep 1; done"],
+                &[],
+                None,
+                24,
+                80,
+            )
+            .expect("spawn_via_tmux should succeed when tmux is available");
+            assert_eq!(pane.tmux_session(), Some(session.as_str()));
+            assert!(
+                tmux_has_session(&session),
+                "session should exist while pane is alive"
+            );
+            // pane drops here — equivalent to TUI exit on user quit.
+        }
+
+        // Give tmux a brief moment in case the attach client teardown
+        // is async on this platform; in practice the server keeps the
+        // session regardless.
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        assert!(
+            tmux_has_session(&session),
+            "tmux session must survive PtyPane Drop — this is the persistence invariant"
+        );
+
+        // Cleanup: explicitly kill so the test doesn't leak background
+        // sleep loops between runs.
+        tmux_kill_session(&session);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(
+            !tmux_has_session(&session),
+            "kill_session should remove the session"
+        );
+    }
+
+    /// Re-spawning into the same session reattaches rather than
+    /// starting a fresh process — that is the entry point for "user
+    /// closed wg tui, opens it again, gets their chat back".
+    #[test]
+    fn spawn_via_tmux_reattaches_existing_session() {
+        if !tmux_available() {
+            eprintln!("tmux not installed — skipping reattach test");
+            return;
+        }
+        let suffix = format!(
+            "{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        );
+        let session = format!("wg-chat-test-reattach-{}", suffix);
+
+        // First spawn writes a marker file inside the session shell.
+        // We assert the marker contents persist between attaches —
+        // proving we hit the same shell, not a fresh one.
+        let marker = std::env::temp_dir().join(format!("wg-tmux-test-{}", suffix));
+        let cmd = format!(
+            "echo first > {marker}; while true; do sleep 1; done",
+            marker = marker.display()
+        );
+        {
+            let _pane =
+                PtyPane::spawn_via_tmux(&session, "sh", &["-c", &cmd], &[], None, 24, 80)
+                    .expect("first spawn ok");
+        }
+        // Wait for the inner shell to write the marker.
+        let mut found = false;
+        for _ in 0..30 {
+            if marker.exists() {
+                found = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(
+            found,
+            "marker file {} should exist after first spawn",
+            marker.display()
+        );
+
+        // Second spawn must NOT re-run the command; if it did, it
+        // would overwrite our marker contents below.
+        std::fs::write(&marker, b"reattach").unwrap();
+        {
+            let _pane =
+                PtyPane::spawn_via_tmux(&session, "sh", &["-c", &cmd], &[], None, 24, 80)
+                    .expect("second spawn ok (reattach)");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        let after = std::fs::read_to_string(&marker).unwrap();
+        assert_eq!(
+            after.trim(),
+            "reattach",
+            "second spawn must reattach, NOT re-run the inner shell command"
+        );
+
+        tmux_kill_session(&session);
+        let _ = std::fs::remove_file(&marker);
+    }
+
+    #[test]
+    fn spawn_via_tmux_rejects_invalid_session_name() {
+        // Don't actually need tmux to test the validation guard.
+        let bad = ["", "with space", "has:colon", "has.dot"];
+        for name in bad {
+            let r = PtyPane::spawn_via_tmux(
+                name,
+                "sh",
+                &["-c", "true"],
+                &[],
+                None,
+                24,
+                80,
+            );
+            assert!(
+                r.is_err(),
+                "spawn_via_tmux must reject invalid session name {:?}",
+                name
             );
         }
     }

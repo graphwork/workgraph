@@ -838,6 +838,39 @@ pub enum InputMode {
     /// Scroll mode on the active chat PTY pane (Ctrl+] toggle).
     /// Inner PTY receives no input; arrow keys/PgUp/PgDn navigate scrollback.
     ScrollMode { task_id: String },
+    /// Chat-exit confirmation: ask the user whether to leave chat tmux
+    /// sessions running (resume next launch) or close them (kill the
+    /// chat process, no resume). Triggered when the user requests quit
+    /// while one or more chat tmux sessions are alive.
+    ExitPrompt(ExitPromptState),
+}
+
+/// State for the chat-exit prompt that fires when the user quits the
+/// TUI with active chat tmux sessions. See task implement-tmux-wrapped
+/// for the design rationale (codex resume integrity vs clean-end UX).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExitPromptState {
+    /// All live chat ids at the moment the prompt opened.
+    pub chats: Vec<u32>,
+    /// When `Some(i)`, the user picked "Select per-chat" and we are
+    /// currently prompting about chats[i]. The accumulated decisions
+    /// live in `per_chat_close`.
+    pub per_chat_idx: Option<usize>,
+    /// Per-chat close decision (true = close / kill tmux session).
+    /// Same length as `chats`; entries past `per_chat_idx` are stale
+    /// (default false until the user advances).
+    pub per_chat_close: Vec<bool>,
+}
+
+impl ExitPromptState {
+    pub fn new(chats: Vec<u32>) -> Self {
+        let n = chats.len();
+        Self {
+            chats,
+            per_chat_idx: None,
+            per_chat_close: vec![false; n],
+        }
+    }
 }
 
 /// What action the confirmation dialog is for.
@@ -2300,6 +2333,10 @@ pub struct PendingChatPtySpawn {
     pub env: Vec<(String, String)>,
     pub cwd: Option<PathBuf>,
     pub executor: String,
+    /// When `Some`, route this spawn through tmux: the chat process
+    /// runs inside the named session and survives TUI exit. None falls
+    /// back to plain `spawn_in` (used when tmux is not on PATH).
+    pub tmux_session: Option<String>,
 }
 
 /// State for the Dashboard panel tab.
@@ -4489,6 +4526,12 @@ pub struct VizApp {
     viz_options: VizOptions,
     /// Whether the app should quit on next loop iteration.
     pub should_quit: bool,
+    /// Set true once the user has resolved the chat-exit prompt for the
+    /// current quit attempt. Prevents the intercept from re-opening the
+    /// prompt after the user has chosen "leave all" or "close all".
+    /// Reset whenever input_mode becomes Normal again (so a *cancelled*
+    /// exit still triggers the prompt on the next quit attempt).
+    pub exit_prompt_resolved: bool,
 
     // ── Viz content ──
     /// Raw lines from `wg viz` output (may contain ANSI color codes).
@@ -5137,6 +5180,7 @@ impl VizApp {
             workgraph_dir,
             viz_options,
             should_quit: false,
+            exit_prompt_resolved: false,
             lines: Vec::new(),
             plain_lines: Vec::new(),
             search_lines: Vec::new(),
@@ -9649,6 +9693,7 @@ impl VizApp {
             workgraph_dir: std::path::PathBuf::from("/tmp/test-workgraph"),
             viz_options: crate::commands::viz::VizOptions::default(),
             should_quit: false,
+            exit_prompt_resolved: false,
             lines,
             plain_lines,
             search_lines,
@@ -10326,6 +10371,19 @@ impl VizApp {
                 }
                 CommandEffect::DeleteCoordinator(cid) => {
                     if result.success {
+                        // Tear down the chat tmux session — the chat
+                        // is being abandoned, so we don't want a
+                        // dangling session reattaching on next launch.
+                        let task_id = workgraph::chat_id::format_chat_task_id(cid);
+                        if let Some(mut pane) = self.task_panes.remove(&task_id) {
+                            pane.kill_underlying_session();
+                        } else {
+                            workgraph::chat_id::kill_chat_tmux_session_for_id(
+                                &self.workgraph_dir,
+                                cid,
+                            );
+                        }
+
                         if cid == self.active_coordinator_id {
                             // Switch to another available coordinator (not the one being deleted)
                             let other = self
@@ -10353,6 +10411,27 @@ impl VizApp {
                 }
                 CommandEffect::ArchiveCoordinator(cid) => {
                     if result.success {
+                        // Kill the tmux chat session (if any) before we
+                        // drop our local pane reference. Doing this in
+                        // the TUI's ArchiveCoordinator handler covers
+                        // archive-via-mouse-click + archive-via-hotkey
+                        // + archive-via-IPC paths uniformly. The CLI
+                        // path (`wg chat archive`) does its own cleanup
+                        // in chat_cmd::run_archive.
+                        let task_id = workgraph::chat_id::format_chat_task_id(cid);
+                        if let Some(mut pane) = self.task_panes.remove(&task_id) {
+                            pane.kill_underlying_session();
+                        } else {
+                            // No live PTY on this TUI — but the session
+                            // may still be running because another TUI
+                            // (or a prior `wg tui`) spawned it. Reach
+                            // for it by canonical name.
+                            workgraph::chat_id::kill_chat_tmux_session_for_id(
+                                &self.workgraph_dir,
+                                cid,
+                            );
+                        }
+
                         if cid == self.active_coordinator_id {
                             // Switch to another available coordinator (not the one being archived)
                             let other = self
@@ -13296,6 +13375,29 @@ impl VizApp {
             env.push(("WG_MODEL".to_string(), m.clone()));
         }
 
+        // tmux-wrap the chat process when tmux is on PATH so it
+        // survives TUI exit (the persistence design — see
+        // docs/design/chat-agent-persistence.md). Falls back to plain
+        // spawn with a one-time stderr warning when tmux is missing.
+        let project_root = self
+            .workgraph_dir
+            .parent()
+            .unwrap_or(&self.workgraph_dir)
+            .to_path_buf();
+        let project_tag = project_root
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("project");
+        let tmux_session = if crate::tui::pty_pane::tmux_available() {
+            Some(workgraph::chat_id::chat_tmux_session_name(
+                project_tag,
+                &chat_ref,
+            ))
+        } else {
+            warn_chat_tmux_missing_once();
+            None
+        };
+
         // Defer the actual spawn to the render path so the PTY child's
         // initial size matches the chat message area exactly. Spawning
         // at hardcoded 24×80 here and resizing on the first frame fires
@@ -13313,6 +13415,7 @@ impl VizApp {
             env,
             cwd: cwd_opt,
             executor: executor.clone(),
+            tmux_session,
         });
         self.chat_pty_mode = true;
         self.chat_pty_forwards_stdin = true;
@@ -13350,14 +13453,47 @@ impl VizApp {
         self.task_panes.remove(&pending.task_id);
 
         let args_ref: Vec<&str> = pending.args.iter().map(String::as_str).collect();
-        let spawn_result = crate::tui::pty_pane::PtyPane::spawn_in(
-            &pending.bin,
-            &args_ref,
-            &pending.env,
-            pending.cwd.as_deref(),
-            rows,
-            cols,
-        );
+        let spawn_result = if let Some(ref session_name) = pending.tmux_session {
+            // tmux-wrapped path: chat process lives inside the tmux
+            // session and survives TUI exit. If the tmux invocation
+            // itself fails (e.g. tmux removed between the
+            // availability probe and now), fall back to direct spawn.
+            match crate::tui::pty_pane::PtyPane::spawn_via_tmux(
+                session_name,
+                &pending.bin,
+                &args_ref,
+                &pending.env,
+                pending.cwd.as_deref(),
+                rows,
+                cols,
+            ) {
+                Ok(pane) => Ok(pane),
+                Err(e) => {
+                    eprintln!(
+                        "[tui] tmux-wrapped chat spawn failed ({}): falling back to \
+                         direct spawn (chat will not persist across TUI exit)",
+                        e
+                    );
+                    crate::tui::pty_pane::PtyPane::spawn_in(
+                        &pending.bin,
+                        &args_ref,
+                        &pending.env,
+                        pending.cwd.as_deref(),
+                        rows,
+                        cols,
+                    )
+                }
+            }
+        } else {
+            crate::tui::pty_pane::PtyPane::spawn_in(
+                &pending.bin,
+                &args_ref,
+                &pending.env,
+                pending.cwd.as_deref(),
+                rows,
+                cols,
+            )
+        };
         match spawn_result {
             Ok(pane) => {
                 self.task_panes.insert(pending.task_id, pane);
@@ -13382,7 +13518,81 @@ impl VizApp {
     /// On TUI startup, auto-create a coordinator labeled with the current
     /// WG_USER identity if none exists for that user. This ensures each user
     /// gets their own chat agent managing their own agent budget.
+    /// Tear down any `wg-chat-*` tmux session for THIS project whose
+    /// backing chat task is no longer alive in the graph. Runs once
+    /// at TUI startup. No-op when tmux isn't installed.
+    ///
+    /// Only matches sessions whose project tag equals the current
+    /// project root's basename — so two different projects' TUIs can
+    /// run side-by-side without sweeping each other's sessions.
+    pub fn sweep_orphan_chat_tmux_sessions(&mut self) {
+        if !crate::tui::pty_pane::tmux_available() {
+            return;
+        }
+        let project_root = self
+            .workgraph_dir
+            .parent()
+            .unwrap_or(&self.workgraph_dir)
+            .to_path_buf();
+        let project_tag = project_root
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("project")
+            .to_string();
+
+        // Build the set of live chat refs from the graph: `chat-N` for
+        // every non-archived/non-abandoned task with the chat-loop tag.
+        let graph_path = self.workgraph_dir.join("graph.jsonl");
+        let live_refs: std::collections::HashSet<String> =
+            workgraph::parser::load_graph(&graph_path)
+                .map(|g| {
+                    g.tasks()
+                        .filter(|t| {
+                            t.tags
+                                .iter()
+                                .any(|tag| workgraph::chat_id::is_chat_loop_tag(tag))
+                        })
+                        .filter(|t| !matches!(t.status, workgraph::graph::Status::Abandoned))
+                        .filter(|t| !t.tags.iter().any(|tag| tag == "archived"))
+                        .filter_map(|t| workgraph::chat_id::parse_chat_task_id(&t.id))
+                        .map(|n| format!("chat-{}", n))
+                        .collect()
+                })
+                .unwrap_or_default();
+
+        // Enumerate all wg-chat-* sessions and kill the ones whose chat
+        // ref isn't in `live_refs`.
+        let prefix = format!(
+            "{}{}-",
+            workgraph::chat_id::CHAT_TMUX_SESSION_PREFIX,
+            project_tag.replace([':', '.'], "-")
+        );
+        let sessions = crate::tui::pty_pane::tmux_list_sessions_with_prefix(&prefix);
+        for session in &sessions {
+            let Some(chat_ref) =
+                workgraph::chat_id::parse_chat_tmux_session(session, &project_tag)
+            else {
+                continue;
+            };
+            if !live_refs.contains(&chat_ref) {
+                eprintln!(
+                    "[wg-tui] sweeping orphan chat tmux session: {} (no live task)",
+                    session
+                );
+                crate::tui::pty_pane::tmux_kill_session(session);
+            }
+        }
+    }
+
     pub fn ensure_user_coordinator(&mut self) {
+        // Orphan-sweep tmux chat sessions whose backing task is gone
+        // before any chat-tab spawn might reattach to one. Cheap (one
+        // `tmux list-sessions` shell-out + a graph load) and the only
+        // way we don't accumulate `wg-chat-*` sessions across runs of
+        // `wg chat delete` / archive-while-tui-was-down. See design
+        // doc Lifecycle invariants.
+        self.sweep_orphan_chat_tmux_sessions();
+
         let user = workgraph::current_user();
         // Don't auto-create for the fallback "unknown" identity
         if user == "unknown" {
@@ -13706,6 +13916,128 @@ impl VizApp {
     /// Delete a coordinator session via IPC.
     /// Sends the delete command to the backend; on success the effect handler
     /// cleans up local chat state, switches to another coordinator, and refreshes.
+    // ── Chat-exit prompt (tmux-persistence UX) ──────────────────────
+
+    /// Returns chat ids that currently have a live tmux session for
+    /// THIS project. Used by the exit-prompt intercept to decide
+    /// whether to ask "leave running or close?" or to just exit.
+    pub fn live_chat_tmux_ids(&self) -> Vec<u32> {
+        if !crate::tui::pty_pane::tmux_available() {
+            return Vec::new();
+        }
+        let project_root = self
+            .workgraph_dir
+            .parent()
+            .unwrap_or(&self.workgraph_dir)
+            .to_path_buf();
+        let project_tag = project_root
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("project")
+            .to_string();
+        let prefix = format!(
+            "{}{}-",
+            workgraph::chat_id::CHAT_TMUX_SESSION_PREFIX,
+            project_tag.replace([':', '.'], "-")
+        );
+        crate::tui::pty_pane::tmux_list_sessions_with_prefix(&prefix)
+            .into_iter()
+            .filter_map(|s| {
+                workgraph::chat_id::parse_chat_tmux_session(&s, &project_tag)
+            })
+            .filter_map(|cref| cref.strip_prefix("chat-").and_then(|n| n.parse::<u32>().ok()))
+            .collect()
+    }
+
+    /// Open the chat-exit prompt overlay. Caller is responsible for
+    /// having decided that one is warranted (see `live_chat_tmux_ids`).
+    pub fn open_exit_prompt(&mut self, chats: Vec<u32>) {
+        self.input_mode = InputMode::ExitPrompt(ExitPromptState::new(chats));
+    }
+
+    /// Resolve the exit prompt with "leave all running": exit the TUI
+    /// without touching tmux sessions; next `wg tui` reattaches.
+    pub fn resolve_exit_prompt_leave_all(&mut self) {
+        self.input_mode = InputMode::Normal;
+        self.should_quit = true;
+        self.exit_prompt_resolved = true;
+    }
+
+    /// Resolve the exit prompt with "close all": kill every chat tmux
+    /// session for this project, then exit.
+    pub fn resolve_exit_prompt_close_all(&mut self) {
+        let chats = match &self.input_mode {
+            InputMode::ExitPrompt(s) => s.chats.clone(),
+            _ => Vec::new(),
+        };
+        for cid in chats {
+            // Prefer pane-owned cleanup so the local task_panes entry is
+            // disposed; fall back to direct kill-by-name otherwise (e.g.
+            // for chats spawned under a prior TUI process).
+            let task_id = workgraph::chat_id::format_chat_task_id(cid);
+            if let Some(mut pane) = self.task_panes.remove(&task_id) {
+                pane.kill_underlying_session();
+            } else {
+                workgraph::chat_id::kill_chat_tmux_session_for_id(
+                    &self.workgraph_dir,
+                    cid,
+                );
+            }
+        }
+        self.input_mode = InputMode::Normal;
+        self.should_quit = true;
+        self.exit_prompt_resolved = true;
+    }
+
+    /// Resolve per-chat decisions: kill tmux sessions for chats marked
+    /// `close`, leave the rest alone, then exit.
+    pub fn resolve_exit_prompt_per_chat(&mut self) {
+        let (chats, decisions) = match &self.input_mode {
+            InputMode::ExitPrompt(s) => (s.chats.clone(), s.per_chat_close.clone()),
+            _ => (Vec::new(), Vec::new()),
+        };
+        for (cid, close) in chats.iter().zip(decisions.iter()) {
+            if !close {
+                continue;
+            }
+            let task_id = workgraph::chat_id::format_chat_task_id(*cid);
+            if let Some(mut pane) = self.task_panes.remove(&task_id) {
+                pane.kill_underlying_session();
+            } else {
+                workgraph::chat_id::kill_chat_tmux_session_for_id(
+                    &self.workgraph_dir,
+                    *cid,
+                );
+            }
+        }
+        self.input_mode = InputMode::Normal;
+        self.should_quit = true;
+        self.exit_prompt_resolved = true;
+    }
+
+    /// Cancel the exit prompt — return to Normal mode without quitting.
+    pub fn cancel_exit_prompt(&mut self) {
+        self.input_mode = InputMode::Normal;
+        self.should_quit = false;
+        self.exit_prompt_resolved = false;
+    }
+
+    /// Switch the exit prompt into per-chat granular mode.
+    pub fn enter_exit_prompt_per_chat(&mut self) {
+        if let InputMode::ExitPrompt(ref mut s) = self.input_mode {
+            // Skip directly to "all done" if there are 0 chats — but the
+            // intercept already gates on chats.len() > 0, so this is just
+            // a safety belt.
+            if s.chats.is_empty() {
+                self.input_mode = InputMode::Normal;
+                self.should_quit = true;
+                self.exit_prompt_resolved = true;
+                return;
+            }
+            s.per_chat_idx = Some(0);
+        }
+    }
+
     pub fn delete_coordinator(&mut self, cid: u32) {
         let args = vec![
             "service".to_string(),
@@ -16340,6 +16672,21 @@ fn find_all_archives(
     // Sort by name ascending (oldest first — timestamps sort lexicographically)
     entries.sort_by(|a, b| a.0.cmp(&b.0));
     entries
+}
+
+/// Print the "tmux missing → no chat persistence" warning at most once
+/// per process. Without the once-guard, every chat tab the user opens
+/// in this TUI session would re-emit the same banner.
+fn warn_chat_tmux_missing_once() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    if !WARNED.swap(true, Ordering::Relaxed) {
+        eprintln!(
+            "[wg-tui] tmux not installed — chat agents will NOT survive TUI exit. \
+             Install tmux for codex/claude resume integrity. \
+             (See docs/design/chat-agent-persistence.md.)"
+        );
+    }
 }
 
 /// Deterministic session UUID for a coordinator, derived from CWD + session name.
@@ -24819,6 +25166,7 @@ mod chat_pty_deferred_spawn_tests {
             env: vec![],
             cwd: None,
             executor: "native".to_string(),
+            tmux_session: None,
         });
         let spawned = app.consume_pending_chat_pty_spawn(0, 80);
         assert!(!spawned);
@@ -24847,6 +25195,7 @@ mod chat_pty_deferred_spawn_tests {
             env: vec![],
             cwd: None,
             executor: "native".to_string(),
+            tmux_session: None,
         });
         let rows = 30u16;
         let cols = 120u16;
@@ -25006,5 +25355,135 @@ mod chat_pty_redraw_trigger_tests {
         if let Some(p) = app.task_panes.remove(".chat-test") {
             drop(p);
         }
+    }
+}
+
+#[cfg(test)]
+mod chat_exit_prompt_tests {
+    //! Cover the chat-exit prompt state transitions: open / leave-all
+    //! / close-all / per-chat advance / back / cancel. The actual
+    //! kill-tmux side effects are tested separately in pty_pane.rs +
+    //! chat_id.rs unit tests; here we just pin the mode + flag
+    //! transitions so future refactors can't silently regress the UX.
+    use super::*;
+    use crate::commands::viz::VizOutput;
+
+    fn empty_app() -> VizApp {
+        let viz = VizOutput {
+            text: String::new(),
+            node_line_map: HashMap::new(),
+            task_order: Vec::new(),
+            forward_edges: HashMap::new(),
+            reverse_edges: HashMap::new(),
+            char_edge_map: HashMap::new(),
+            cycle_members: HashMap::new(),
+            annotation_map: HashMap::new(),
+        };
+        VizApp::from_viz_output_for_test(&viz)
+    }
+
+    #[test]
+    fn open_exit_prompt_switches_to_exit_mode() {
+        let mut app = empty_app();
+        app.open_exit_prompt(vec![1, 2, 3]);
+        match app.input_mode {
+            InputMode::ExitPrompt(ref s) => {
+                assert_eq!(s.chats, vec![1, 2, 3]);
+                assert_eq!(s.per_chat_idx, None);
+                assert_eq!(s.per_chat_close, vec![false, false, false]);
+            }
+            _ => panic!("input_mode must be ExitPrompt after open"),
+        }
+        assert!(!app.exit_prompt_resolved);
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn resolve_leave_all_sets_should_quit_and_resolved() {
+        let mut app = empty_app();
+        app.open_exit_prompt(vec![1, 2]);
+        app.resolve_exit_prompt_leave_all();
+        assert!(matches!(app.input_mode, InputMode::Normal));
+        assert!(app.should_quit);
+        assert!(app.exit_prompt_resolved);
+    }
+
+    #[test]
+    fn resolve_close_all_sets_should_quit_and_resolved() {
+        let mut app = empty_app();
+        app.open_exit_prompt(vec![1, 2]);
+        app.resolve_exit_prompt_close_all();
+        // We don't have actual tmux sessions in a unit test; this
+        // exercises the state machine, not the kill side effect.
+        assert!(matches!(app.input_mode, InputMode::Normal));
+        assert!(app.should_quit);
+        assert!(app.exit_prompt_resolved);
+    }
+
+    #[test]
+    fn enter_per_chat_sets_idx_zero() {
+        let mut app = empty_app();
+        app.open_exit_prompt(vec![5, 6]);
+        app.enter_exit_prompt_per_chat();
+        match &app.input_mode {
+            InputMode::ExitPrompt(s) => assert_eq!(s.per_chat_idx, Some(0)),
+            _ => panic!("must remain in ExitPrompt mode"),
+        }
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn cancel_clears_should_quit_and_resolved() {
+        let mut app = empty_app();
+        app.should_quit = true;
+        app.exit_prompt_resolved = true;
+        app.open_exit_prompt(vec![1]);
+        app.cancel_exit_prompt();
+        assert!(matches!(app.input_mode, InputMode::Normal));
+        assert!(!app.should_quit, "cancel must clear should_quit");
+        assert!(
+            !app.exit_prompt_resolved,
+            "cancel must reset exit_prompt_resolved so a future quit attempt re-prompts"
+        );
+    }
+
+    #[test]
+    fn per_chat_idx_advances_through_all_chats() {
+        let mut app = empty_app();
+        app.open_exit_prompt(vec![1, 2, 3]);
+        app.enter_exit_prompt_per_chat();
+        // Manually set per_chat_close + advance idx as the input
+        // handler would.
+        if let InputMode::ExitPrompt(ref mut s) = app.input_mode {
+            assert_eq!(s.per_chat_idx, Some(0));
+            s.per_chat_close[0] = false;
+            s.per_chat_idx = Some(1);
+        }
+        if let InputMode::ExitPrompt(ref mut s) = app.input_mode {
+            assert_eq!(s.per_chat_idx, Some(1));
+            s.per_chat_close[1] = true;
+            s.per_chat_idx = Some(2);
+        }
+        if let InputMode::ExitPrompt(ref mut s) = app.input_mode {
+            s.per_chat_close[2] = false;
+            s.per_chat_idx = None; // signal "ready to apply"
+            assert_eq!(s.per_chat_close, vec![false, true, false]);
+        }
+        // Now applying per-chat decisions should set should_quit.
+        app.resolve_exit_prompt_per_chat();
+        assert!(matches!(app.input_mode, InputMode::Normal));
+        assert!(app.should_quit);
+        assert!(app.exit_prompt_resolved);
+    }
+
+    #[test]
+    fn enter_per_chat_with_no_chats_skips_to_resolved() {
+        let mut app = empty_app();
+        app.open_exit_prompt(vec![]);
+        app.enter_exit_prompt_per_chat();
+        // Empty chat list short-circuits to "done".
+        assert!(matches!(app.input_mode, InputMode::Normal));
+        assert!(app.should_quit);
+        assert!(app.exit_prompt_resolved);
     }
 }
