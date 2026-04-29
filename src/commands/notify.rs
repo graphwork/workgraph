@@ -204,6 +204,7 @@ fn format_notification(task: &Task, custom_message: Option<&str>) -> (String, St
         Status::Waiting => "⏸️",
         Status::PendingValidation => "🔍",
         Status::PendingEval => "🔍",
+        Status::FailedPendingEval => "⚠️",
         Status::Incomplete => "🔁",
     };
 
@@ -378,6 +379,8 @@ mod tests {
             max_rejections: None,
             verify_failures: 0,
             rescue_count: 0,
+            rescued: false,
+            meta_eval_attempts: 0,
             spawn_failures: 0,
             dispatch_count: 0,
             tier: None,

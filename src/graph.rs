@@ -174,6 +174,12 @@ pub enum Status {
     /// and downstream dependents unblock. On fail, the existing
     /// `auto_rescue_on_eval_fail` path runs (Failed + rescue task).
     PendingEval,
+    /// Soft-failed: agent exited with `failure_class=AgentExitNonzero` without
+    /// calling `wg done` or `wg fail`. The dispatcher invokes `.evaluate-X`;
+    /// on a recorded score >= eval_gate_threshold the task is rescued
+    /// (→ Done with rescued=true), otherwise it transitions to Failed
+    /// (terminal, no auto-rescue spawn).
+    FailedPendingEval,
     Incomplete,
 }
 
@@ -189,6 +195,7 @@ impl std::fmt::Display for Status {
             Status::Abandoned => write!(f, "abandoned"),
             Status::PendingValidation => write!(f, "pending-validation"),
             Status::PendingEval => write!(f, "pending-eval"),
+            Status::FailedPendingEval => write!(f, "failed-pending-eval"),
             Status::Incomplete => write!(f, "incomplete"),
         }
     }
@@ -211,6 +218,7 @@ impl<'de> serde::Deserialize<'de> for Status {
             "abandoned" => Ok(Status::Abandoned),
             "pending-validation" => Ok(Status::PendingValidation),
             "pending-eval" => Ok(Status::PendingEval),
+            "failed-pending-eval" => Ok(Status::FailedPendingEval),
             "incomplete" => Ok(Status::Incomplete),
             // Migration: pending-review is treated as done
             "pending-review" => Ok(Status::Done),
@@ -226,6 +234,7 @@ impl<'de> serde::Deserialize<'de> for Status {
                     "abandoned",
                     "pending-validation",
                     "pending-eval",
+                    "failed-pending-eval",
                     "incomplete",
                 ],
             )),
@@ -260,13 +269,17 @@ impl Status {
     /// - InProgress: agent is currently working
     /// - PendingValidation: agent finished, --verify gate pending
     /// - PendingEval: agent called `wg done`, awaiting evaluation
+    /// - FailedPendingEval: agent exited implicitly, awaiting eval verdict
     ///
     /// Excludes Open (not started), Waiting (gated on a wait condition),
     /// Blocked (dependency unmet), and all terminal states.
     pub fn is_active(&self) -> bool {
         matches!(
             self,
-            Status::InProgress | Status::PendingValidation | Status::PendingEval
+            Status::InProgress
+                | Status::PendingValidation
+                | Status::PendingEval
+                | Status::FailedPendingEval
         )
     }
 }
@@ -520,6 +533,16 @@ pub struct Task {
     /// and the task stays Failed.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub rescue_count: u32,
+    /// Whether this task was rescued from implicit failure via eval: agent exited
+    /// without calling `wg done`, but the evaluator scored the output >= threshold.
+    /// Forensic marker for TUI/show/evolution — does not affect state machine.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub rescued: bool,
+    /// Number of rescue-eval meta-task failures for this task. Used by the
+    /// bounded-retry logic (Fork 6): retry once if `.evaluate-X` fails;
+    /// after 2 failures, the source lands in terminal Failed.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub meta_eval_attempts: u32,
     /// Number of consecutive spawn failures (spawn circuit breaker counter)
     #[serde(default, skip_serializing_if = "is_zero")]
     pub spawn_failures: u32,
@@ -645,6 +668,8 @@ impl Default for Task {
             max_rejections: None,
             verify_failures: 0,
             rescue_count: 0,
+            rescued: false,
+            meta_eval_attempts: 0,
             spawn_failures: 0,
             tier: None,
             no_tier_escalation: false,
@@ -1242,6 +1267,10 @@ struct TaskHelper {
     #[serde(default)]
     rescue_count: u32,
     #[serde(default)]
+    rescued: bool,
+    #[serde(default)]
+    meta_eval_attempts: u32,
+    #[serde(default)]
     spawn_failures: u32,
     #[serde(default)]
     tier: Option<String>,
@@ -1354,6 +1383,8 @@ impl<'de> Deserialize<'de> for Task {
             max_rejections: helper.max_rejections,
             verify_failures: helper.verify_failures,
             rescue_count: helper.rescue_count,
+            rescued: helper.rescued,
+            meta_eval_attempts: helper.meta_eval_attempts,
             spawn_failures: helper.spawn_failures,
             tier: helper.tier,
             no_tier_escalation: helper.no_tier_escalation,

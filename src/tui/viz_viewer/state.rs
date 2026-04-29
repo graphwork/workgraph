@@ -293,6 +293,7 @@ fn flash_color_for_status(status: &Status) -> (u8, u8, u8) {
         Status::Abandoned => (140, 100, 160), // muted purple
         Status::Waiting | Status::PendingValidation => (60, 160, 220), // blue
         Status::PendingEval => (140, 230, 80), // chartreuse: between yellow (in-progress) and green (done)
+        Status::FailedPendingEval => (210, 130, 70), // warm coral: between failed-red and pending-yellow
         Status::Incomplete => (255, 165, 0),  // orange
     }
 }
@@ -6634,7 +6635,10 @@ impl VizApp {
                     Status::Open | Status::Incomplete => counts.open += 1,
                     Status::Failed => counts.failed += 1,
                     Status::Blocked | Status::Waiting => counts.blocked += 1,
-                    Status::InProgress | Status::PendingValidation | Status::PendingEval => {
+                    Status::InProgress
+                    | Status::PendingValidation
+                    | Status::PendingEval
+                    | Status::FailedPendingEval => {
                         unreachable!("handled by is_active branch")
                     }
                 }
@@ -7614,7 +7618,7 @@ impl VizApp {
                                 Status::Done => 4,
                                 Status::Abandoned => 5,
                                 Status::Waiting | Status::PendingValidation => 3,
-                                Status::PendingEval => 0, // visible like in-progress
+                                Status::PendingEval | Status::FailedPendingEval => 0, // visible like in-progress
                                 Status::Incomplete => 1, // high priority like failed
                             };
                             (t.id.clone(), priority)
@@ -8198,7 +8202,8 @@ impl VizApp {
                         }
                         Status::InProgress
                         | Status::PendingValidation
-                        | Status::PendingEval => "running…",
+                        | Status::PendingEval
+                        | Status::FailedPendingEval => "running…",
                         Status::Done => "done (no score recorded)",
                         Status::Failed => "failed (no score recorded)",
                         Status::Abandoned => "abandoned (no score recorded)",
@@ -8893,6 +8898,7 @@ impl VizApp {
                 Some(Status::Blocked) => "blocked".to_string(),
                 Some(Status::PendingValidation) => "pending-validation".to_string(),
                 Some(Status::PendingEval) => "pending-eval".to_string(),
+                Some(Status::FailedPendingEval) => "failed pending evaluation".to_string(),
                 Some(Status::Incomplete) => "incomplete".to_string(),
                 Some(Status::Open) => "open".to_string(),
                 None => "current".to_string(),

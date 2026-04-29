@@ -210,8 +210,8 @@ fn compute_summary(graph: &WorkGraph) -> Summary {
             Status::Failed | Status::Abandoned | Status::Waiting | Status::PendingValidation => {
                 // Failed/abandoned tasks not counted in progress metrics
             }
-            Status::PendingEval => {
-                // Soft-done: count toward in-progress until eval resolves it.
+            Status::PendingEval | Status::FailedPendingEval => {
+                // Soft-done/soft-failed: count toward in-progress until eval resolves.
                 in_progress += 1;
                 if let Some(ref est) = task.estimate {
                     estimated_hours += est.hours.unwrap_or(0.0);
@@ -752,6 +752,7 @@ fn print_human_readable(output: &AnalysisOutput) {
                 Status::Abandoned => "abandoned".to_string(),
                 Status::Waiting | Status::PendingValidation => "waiting".to_string(),
                 Status::PendingEval => "pending-eval".to_string(),
+                Status::FailedPendingEval => "failed-pending-eval".to_string(),
                 Status::Incomplete => "incomplete (needs retry)".to_string(),
             };
 

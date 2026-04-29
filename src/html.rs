@@ -359,6 +359,7 @@ fn status_color(status: Status) -> &'static str {
         Status::Abandoned => "rgb(140,100,160)",
         Status::Waiting | Status::PendingValidation => "rgb(60,160,220)",
         Status::PendingEval => "rgb(140,230,80)",
+        Status::FailedPendingEval => "rgb(210,130,70)", // warm coral: between failed-red and pending-yellow
         Status::Incomplete => "rgb(255,165,0)",
     }
 }
@@ -374,6 +375,7 @@ fn status_class(status: Status) -> &'static str {
         Status::Waiting => "waiting",
         Status::PendingValidation => "pending-validation",
         Status::PendingEval => "pending-eval",
+        Status::FailedPendingEval => "failed-pending-eval",
         Status::Incomplete => "incomplete",
     }
 }

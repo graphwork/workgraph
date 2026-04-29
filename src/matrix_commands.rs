@@ -354,7 +354,10 @@ pub fn execute_claim(workgraph_dir: &Path, task_id: &str, actor: Option<&str>) -
                 ));
                 return false;
             }
-            Status::Waiting | Status::PendingValidation | Status::PendingEval => {
+            Status::Waiting
+            | Status::PendingValidation
+            | Status::PendingEval
+            | Status::FailedPendingEval => {
                 result_msg = Some(format!("Cannot claim task '{}': task is Waiting", task_id));
                 return false;
             }

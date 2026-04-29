@@ -881,6 +881,7 @@ fn print_recursive_tree(
                 | Status::Waiting
                 | Status::PendingValidation => "\x1b[90m",
                 Status::PendingEval => "\x1b[38;5;154m", // chartreuse (xterm-256: 154 ~ light green)
+                Status::FailedPendingEval => "\x1b[38;5;208m", // orange (xterm-256: 208 ~ warm coral)
                 Status::Incomplete => "\x1b[38;5;208m",
             }
         };
@@ -895,6 +896,7 @@ fn print_recursive_tree(
                 Status::Abandoned => "abandoned",
                 Status::Waiting | Status::PendingValidation => "waiting",
                 Status::PendingEval => "pending-eval",
+                Status::FailedPendingEval => "failed-pending-eval",
                 Status::Incomplete => "incomplete",
             }
         };
@@ -1115,6 +1117,7 @@ fn print_timeline(
                 "\x1b[90m"
             }
             Status::PendingEval => "\x1b[38;5;154m",
+            Status::FailedPendingEval => "\x1b[38;5;208m",
             Status::Incomplete => "\x1b[38;5;208m",
         }
     };

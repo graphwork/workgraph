@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::Path;
 use workgraph::agency::capture_task_output;
+use workgraph::config::Config;
 use workgraph::graph::{
     FailureClass, LogEntry, Status, evaluate_cycle_on_failure, parse_token_usage, parse_wg_tokens,
 };
@@ -62,6 +63,13 @@ fn run_inner(
 
     let path = super::graph_path(dir);
 
+    // If this is an AgentExitNonzero failure AND auto_evaluate is on, route to
+    // FailedPendingEval instead of terminal Failed so the evaluator can rescue
+    // the task when the output is actually acceptable.
+    let use_failed_pending_eval = !eval_reject
+        && class == Some(FailureClass::AgentExitNonzero)
+        && Config::load_or_default(dir).agency.auto_evaluate;
+
     // Resolve token usage outside the lock (registry read + file I/O).
     let token_usage = AgentRegistry::load(dir).ok().and_then(|registry| {
         let agent = registry.get_agent_by_task(id)?;
@@ -104,6 +112,37 @@ fn run_inner(
         }
         // PendingEval → Failed is allowed from both `wg fail` and the
         // eval-reject path. Falls through to the generic mutation below.
+        //
+        // FailedPendingEval → Failed is the terminal path after eval rejection
+        // (or operator-forced fail). Does NOT trigger auto-rescue spawn.
+
+        // Route to FailedPendingEval when conditions are met (Fork 5):
+        // agent-exit-nonzero + auto_evaluate + not an eval-reject call.
+        // Do NOT re-enter FailedPendingEval if already there (operator can
+        // force terminal-fail from FailedPendingEval by calling wg fail again).
+        if use_failed_pending_eval && task.status != Status::FailedPendingEval {
+            task.status = Status::FailedPendingEval;
+            task.failure_class = class;
+            task.failure_reason = reason_owned.clone();
+            task.log.push(LogEntry {
+                timestamp: Utc::now().to_rfc3339(),
+                actor: task.assigned.clone(),
+                user: Some(workgraph::current_user()),
+                message: "Agent exited without wg done — entering failed-pending-eval for rescue evaluation".to_string(),
+            });
+
+            // Apply pre-resolved token usage
+            if task.token_usage.is_none()
+                && let Some(ref usage) = token_usage
+            {
+                task.token_usage = Some(usage.clone());
+            }
+
+            retry_count = task.retry_count;
+            max_retries = task.max_retries;
+            agent_id_for_archive = task.assigned.clone();
+            return true;
+        }
 
         task.status = Status::Failed;
         task.retry_count += 1;

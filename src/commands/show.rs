@@ -133,6 +133,10 @@ struct TaskDetails {
     iteration_parent: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     iteration_config: Option<workgraph::agency::IterationConfig>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    rescued: bool,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    meta_eval_attempts: u32,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     evaluations: Vec<EvalSummary>,
     /// Snapshot of the task's worktree (when one exists). Populated for
@@ -551,6 +555,8 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         iteration_anchor: task.iteration_anchor.clone(),
         iteration_parent: task.iteration_parent.clone(),
         iteration_config: task.iteration_config.clone(),
+        rescued: task.rescued,
+        meta_eval_attempts: task.meta_eval_attempts,
         evaluations,
         worktree_state: gather_worktree_state(dir, id),
     };
@@ -694,8 +700,24 @@ fn print_human_readable(details: &TaskDetails) {
         }
     }
 
+    // Rescue info (for tasks that were implicit-failed then eval-rescued)
+    if details.rescued {
+        println!("rescued: true  (↻ agent exited without wg done; eval approved output)");
+    }
+    if details.status == Status::FailedPendingEval {
+        println!("status: failed pending evaluation  (awaiting rescue eval from .evaluate-{} — score ≥ {:.2} required to rescue)",
+            details.id,
+            0.7_f64, // shown as human hint; actual threshold from config
+        );
+    }
+    if details.meta_eval_attempts > 0 {
+        println!("meta_eval_attempts: {}", details.meta_eval_attempts);
+    }
+
     // Failure info
-    if (details.status == Status::Failed || details.status == Status::Abandoned)
+    if (details.status == Status::Failed
+        || details.status == Status::Abandoned
+        || details.status == Status::FailedPendingEval)
         && let Some(ref reason) = details.failure_reason
     {
         println!("Failure reason: {}", reason);
@@ -1313,6 +1335,8 @@ mod tests {
             iteration_anchor: None,
             iteration_parent: None,
             iteration_config: None,
+            rescued: false,
+            meta_eval_attempts: 0,
             evaluations: vec![],
             worktree_state: None,
         };

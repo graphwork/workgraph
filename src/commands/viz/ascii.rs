@@ -243,6 +243,7 @@ pub(crate) fn generate_ascii(
             Status::Abandoned => "\x1b[90m",                           // gray
             Status::Waiting | Status::PendingValidation => "\x1b[33m", // yellow
             Status::PendingEval => "\x1b[38;5;154m",                   // chartreuse
+            Status::FailedPendingEval => "\x1b[38;5;208m",             // orange (warm coral)
             Status::Incomplete => "\x1b[38;5;208m",                    // orange
         }
     };
@@ -258,6 +259,7 @@ pub(crate) fn generate_ascii(
             Status::Abandoned => "abandoned",
             Status::Waiting | Status::PendingValidation => "waiting",
             Status::PendingEval => "pending-eval",
+            Status::FailedPendingEval => "failed-pending-eval",
             Status::Incomplete => "incomplete",
         }
     };

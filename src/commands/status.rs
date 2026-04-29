@@ -349,7 +349,7 @@ fn gather_task_summary(dir: &Path, show_all: bool) -> Result<TaskSummaryInfo> {
             Status::Failed | Status::Abandoned | Status::Waiting | Status::PendingValidation => {
                 // Terminal/parked states, not counted in summary
             }
-            Status::PendingEval => {
+            Status::PendingEval | Status::FailedPendingEval => {
                 in_progress += 1;
             }
         }

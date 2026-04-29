@@ -97,6 +97,13 @@ pub fn claim(dir: &Path, id: &str, actor: Option<&str>) -> Result<()> {
                 ));
                 return false;
             }
+            Status::FailedPendingEval => {
+                error = Some(anyhow::anyhow!(
+                    "Cannot claim task '{}': task is pending rescue evaluation",
+                    id
+                ));
+                return false;
+            }
         }
 
         prev_status = format!("{:?}", task.status);
@@ -209,6 +216,13 @@ pub fn unclaim(dir: &Path, id: &str) -> Result<()> {
             Status::PendingEval => {
                 error = Some(anyhow::anyhow!(
                     "Cannot unclaim task '{}': task is pending evaluation",
+                    id
+                ));
+                return false;
+            }
+            Status::FailedPendingEval => {
+                error = Some(anyhow::anyhow!(
+                    "Cannot unclaim task '{}': task is pending rescue evaluation",
                     id
                 ));
                 return false;

@@ -196,7 +196,10 @@ pub(crate) fn is_legacy_coordinator_task(task: &Task) -> bool {
 fn is_pipeline_active(task: &Task) -> bool {
     matches!(
         task.status,
-        Status::InProgress | Status::PendingValidation | Status::PendingEval
+        Status::InProgress
+            | Status::PendingValidation
+            | Status::PendingEval
+            | Status::FailedPendingEval
     )
 }
 
@@ -360,6 +363,7 @@ fn add_parent_state_annotations(
         }
         let annotation = match task.status {
             Status::PendingEval => "[∴ evaluating]",
+            Status::FailedPendingEval => "[∴ rescue eval]",
             Status::PendingValidation => "[∴ validating]",
             _ => continue,
         };
@@ -499,6 +503,7 @@ pub fn generate_viz_output_from_graph(
             Status::Abandoned => "abandoned",
             Status::Waiting | Status::PendingValidation => "waiting",
             Status::PendingEval => "pending-eval",
+            Status::FailedPendingEval => "failed-pending-eval",
             Status::Incomplete => "incomplete",
         }
     };

@@ -29,6 +29,7 @@ pub(crate) fn generate_dot(
             Status::Abandoned => "style=filled, fillcolor=lightgray",
             Status::Waiting | Status::PendingValidation => "style=filled, fillcolor=lightyellow",
             Status::PendingEval => "style=filled, fillcolor=chartreuse",
+            Status::FailedPendingEval => "style=filled, fillcolor=darkorange",
             Status::Incomplete => "style=filled, fillcolor=orange",
         };
 
@@ -202,6 +203,9 @@ pub(crate) fn generate_mermaid(
                 format!("  {}[\"{}\"]:::waiting", task.id, label)
             }
             Status::PendingEval => format!("  {}[\"{}\"]:::pending-eval", task.id, label),
+            Status::FailedPendingEval => {
+                format!("  {}[\"{}\"]:::failed-pending-eval", task.id, label)
+            }
             Status::Incomplete => format!("  {}[\"{}\"]:::incomplete", task.id, label),
         };
         lines.push(node);

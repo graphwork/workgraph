@@ -1270,6 +1270,8 @@ fn handle_add_task(
         exec_mode: None,
         verify_failures: 0,
         rescue_count: 0,
+            rescued: false,
+            meta_eval_attempts: 0,
         spawn_failures: 0,
         dispatch_count: 0,
         tier: None,

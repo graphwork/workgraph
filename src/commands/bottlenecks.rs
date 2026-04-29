@@ -99,6 +99,9 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
                 Status::Abandoned => "abandoned".to_string(),
                 Status::Waiting | Status::PendingValidation => "waiting".to_string(),
                 Status::PendingEval => "pending-eval (awaiting evaluator)".to_string(),
+                Status::FailedPendingEval => {
+                    "failed-pending-eval (awaiting rescue eval)".to_string()
+                }
                 Status::Incomplete => "INCOMPLETE (needs retry!)".to_string(),
             };
             print!("   Status: {}", status_str);
