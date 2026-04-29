@@ -22,6 +22,15 @@ use workgraph::graph::{TokenUsage, format_tokens};
 use crate::tui::markdown::markdown_to_lines;
 use super::chat_palette::chat_task_label_color;
 
+/// Primary text foreground: white on dark terminals, terminal-default on light.
+fn text_primary(is_light: bool) -> Color {
+    if is_light {
+        Color::Reset
+    } else {
+        Color::White
+    }
+}
+
 /// Minimum terminal width for side-by-side right panel layout.
 /// When the inspector is currently on the right and terminal shrinks below this,
 /// the inspector moves to the bottom.
@@ -679,7 +688,7 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
     // ── Overlay widgets (on top of everything) ──
 
     if app.show_help {
-        draw_help_overlay(frame);
+        draw_help_overlay(frame, app.is_light_theme);
     }
 
     // Confirmation dialog overlay
@@ -698,7 +707,7 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
 
     // Text prompt overlay
     if let InputMode::TextPrompt(ref action) = app.input_mode {
-        app.last_text_prompt_area = draw_text_prompt(frame, action, &mut app.text_prompt.editor);
+        app.last_text_prompt_area = draw_text_prompt(frame, action, &mut app.text_prompt.editor, app.is_light_theme);
     } else {
         app.last_text_prompt_area = Rect::default();
     }
@@ -707,7 +716,7 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
     if app.input_mode == InputMode::TaskForm
         && let Some(ref form) = app.task_form
     {
-        draw_task_form(frame, form);
+        draw_task_form(frame, form, app.is_light_theme);
     }
 
     // Service control panel (modal overlay)
@@ -781,11 +790,12 @@ fn apply_splash_style<'a>(
     flash_color: (u8, u8, u8),
     reduced_motion: bool,
     kind: super::state::AnimationKind,
+    is_light: bool,
 ) -> Line<'a> {
     let is_fade_in = matches!(kind, super::state::AnimationKind::Revealed);
 
-    // Terminal background color assumption (dark terminal).
-    let terminal_bg: (u8, u8, u8) = (0, 0, 0);
+    // Terminal background assumption: black for dark terminals, white for light.
+    let terminal_bg: (u8, u8, u8) = if is_light { (255, 255, 255) } else { (0, 0, 0) };
 
     if reduced_motion {
         if is_fade_in {
@@ -820,16 +830,26 @@ fn apply_splash_style<'a>(
     // Ease-out curve for a smoother fade (fast initial dim, slow tail-off).
     let t = progress * progress;
 
-    // Interpolate from the flash color to no background.
-    // Since terminals don't have true alpha, we fade toward black (0,0,0).
-    let r = (flash_color.0 as f64 * (1.0 - t)) as u8;
-    let g = (flash_color.1 as f64 * (1.0 - t)) as u8;
-    let b = (flash_color.2 as f64 * (1.0 - t)) as u8;
+    // On dark terminals: fade toward black. On light: fade toward white.
+    let (r, g, b) = if is_light {
+        let r = (flash_color.0 as f64 * (1.0 - t) + 255.0 * t) as u8;
+        let g = (flash_color.1 as f64 * (1.0 - t) + 255.0 * t) as u8;
+        let b = (flash_color.2 as f64 * (1.0 - t) + 255.0 * t) as u8;
+        (r, g, b)
+    } else {
+        let r = (flash_color.0 as f64 * (1.0 - t)) as u8;
+        let g = (flash_color.1 as f64 * (1.0 - t)) as u8;
+        let b = (flash_color.2 as f64 * (1.0 - t)) as u8;
+        (r, g, b)
+    };
 
-    // At low intensity, skip to avoid a visible snap when the animation
-    // ends.  Use generous thresholds so the fade reaches near-invisible
-    // well before the animation timer expires.
-    if r < 25 && g < 25 && b < 15 {
+    // Stop early when the animation color is nearly indistinguishable from the bg.
+    let done = if is_light {
+        r > 230 && g > 230 && b > 230
+    } else {
+        r < 25 && g < 25 && b < 15
+    };
+    if done {
         return line;
     }
 
@@ -1327,6 +1347,7 @@ fn draw_viz_content(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                 flash_color,
                 reduced,
                 anim_kind,
+                app.is_light_theme,
             );
         }
 
@@ -3266,7 +3287,7 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
 
                     let label_style = if entry.is_active {
                         Style::default()
-                            .fg(Color::White)
+                            .fg(text_primary(app.is_light_theme))
                             .add_modifier(Modifier::BOLD)
                     } else {
                         Style::default().fg(Color::DarkGray)
@@ -3599,7 +3620,7 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         let tool_name_style = Style::default()
             .fg(super::chat_palette::TOOL_CALL)
             .add_modifier(Modifier::BOLD);
-        let tool_content_style = Style::default().fg(super::chat_palette::TOOL_RESULT);
+        let tool_content_style = Style::default().fg(super::chat_palette::tool_result_color(app.is_light_theme));
 
         let wrapped: Vec<Line> = if md_lines.is_empty() {
             vec![Line::from("")]
@@ -3866,7 +3887,7 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
             let tool_name_style = Style::default()
                 .fg(super::chat_palette::TOOL_CALL)
                 .add_modifier(Modifier::BOLD);
-            let tool_content_style = Style::default().fg(super::chat_palette::TOOL_RESULT);
+            let tool_content_style = Style::default().fg(super::chat_palette::tool_result_color(app.is_light_theme));
 
             let wrapped: Vec<Line> = if md_lines.is_empty() {
                 vec![Line::from("")]
@@ -4097,7 +4118,7 @@ fn draw_chat_search_bar(frame: &mut Frame, app: &VizApp, area: Rect) {
         ),
         Span::styled(
             app.chat.search.query.clone(),
-            Style::default().fg(Color::White),
+            Style::default().fg(text_primary(app.is_light_theme)),
         ),
     ];
     if !app.chat.search.query.is_empty() {
@@ -4571,7 +4592,7 @@ fn draw_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
             Span::styled(
                 format!(" {} ", task_label),
                 Style::default()
-                    .fg(Color::White)
+                    .fg(text_primary(app.is_light_theme))
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
@@ -4672,7 +4693,7 @@ fn draw_messages_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         Span::styled(
             format!(" {} ", task_label),
             Style::default()
-                .fg(Color::White)
+                .fg(text_primary(app.is_light_theme))
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
@@ -4999,9 +5020,9 @@ fn build_coordinator_runtime_lines(app: &VizApp) -> Vec<Line<'static>> {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw("· "),
-            Span::styled(executor, Style::default().fg(Color::White)),
+            Span::styled(executor, Style::default().fg(text_primary(app.is_light_theme))),
             Span::raw(" · "),
-            Span::styled(model, Style::default().fg(Color::White)),
+            Span::styled(model, Style::default().fg(text_primary(app.is_light_theme))),
         ]),
         Line::from(vec![
             // Coordinator-tab cyan matches the "↯ " prefix branding so the
@@ -5042,7 +5063,7 @@ fn draw_activity_feed(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     let mut wrapped_lines: Vec<Line> = Vec::new();
 
     for event in &app.activity_feed.events {
-        let (icon_color, icon_style) = activity_event_style(&event.kind);
+        let (icon_color, icon_style) = activity_event_style(&event.kind, app.is_light_theme);
         // Format: "HH:MM:SS icon summary"
         let time_span = Span::styled(
             format!("{} ", event.time_short),
@@ -5100,7 +5121,7 @@ fn draw_activity_feed(frame: &mut Frame, app: &mut VizApp, area: Rect) {
 }
 
 /// Return (foreground color, icon Style) for an activity event kind.
-fn activity_event_style(kind: &ActivityEventKind) -> (Color, Style) {
+fn activity_event_style(kind: &ActivityEventKind, is_light: bool) -> (Color, Style) {
     match kind {
         ActivityEventKind::TaskCreated => (Color::Blue, Style::default().fg(Color::Blue)),
         ActivityEventKind::StatusChange => (Color::Yellow, Style::default().fg(Color::Yellow)),
@@ -5120,7 +5141,10 @@ fn activity_event_style(kind: &ActivityEventKind) -> (Color, Style) {
         }
         ActivityEventKind::VerificationResult => (Color::Cyan, Style::default().fg(Color::Cyan)),
         ActivityEventKind::Compact => (Color::Magenta, Style::default().fg(Color::Magenta)),
-        ActivityEventKind::UserAction => (Color::White, Style::default().fg(Color::White)),
+        ActivityEventKind::UserAction => {
+            let c = text_primary(is_light);
+            (c, Style::default().fg(c))
+        }
     }
 }
 
@@ -5177,7 +5201,7 @@ fn draw_dashboard_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                 Span::styled(
                     format!("Chat #{}", card.id),
                     Style::default()
-                        .fg(Color::White)
+                        .fg(text_primary(app.is_light_theme))
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
@@ -5191,15 +5215,15 @@ fn draw_dashboard_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                 Span::styled("    Agents: ", Style::default().fg(Color::DarkGray)),
                 Span::styled(
                     format!("{}/{}", card.agents_alive, card.max_agents),
-                    Style::default().fg(Color::White),
+                    Style::default().fg(text_primary(app.is_light_theme)),
                 ),
                 Span::styled("  Ready: ", Style::default().fg(Color::DarkGray)),
                 Span::styled(
                     format!("{}", card.tasks_ready),
-                    Style::default().fg(Color::White),
+                    Style::default().fg(text_primary(app.is_light_theme)),
                 ),
                 Span::styled("  Ticks: ", Style::default().fg(Color::DarkGray)),
-                Span::styled(format!("{}", card.ticks), Style::default().fg(Color::White)),
+                Span::styled(format!("{}", card.ticks), Style::default().fg(text_primary(app.is_light_theme))),
             ]));
 
             // Model + tokens
@@ -5283,7 +5307,7 @@ fn draw_dashboard_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                 Span::styled(selector, Style::default().fg(Color::Yellow)),
                 Span::styled(
                     format!("{:<12} ", &row.agent_id),
-                    row_style.fg(Color::White),
+                    row_style.fg(text_primary(app.is_light_theme)),
                 ),
                 Span::styled(
                     format!("{:<8} ", row.activity.label()),
@@ -5293,7 +5317,7 @@ fn draw_dashboard_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                     format!("{:<8} ", elapsed_str),
                     row_style.fg(Color::DarkGray),
                 ),
-                Span::styled(task_display, row_style.fg(Color::White)),
+                Span::styled(task_display, row_style.fg(text_primary(app.is_light_theme))),
             ]));
 
             // Show latest snippet for active agents
@@ -5329,7 +5353,7 @@ fn draw_dashboard_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     let tc = &app.task_counts;
     lines.push(Line::from(vec![
         Span::styled("  Total: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(format!("{}", tc.total), Style::default().fg(Color::White)),
+        Span::styled(format!("{}", tc.total), Style::default().fg(text_primary(app.is_light_theme))),
         Span::styled("  Done: ", Style::default().fg(Color::DarkGray)),
         Span::styled(format!("{}", tc.done), Style::default().fg(Color::Green)),
         Span::styled("  In-progress: ", Style::default().fg(Color::DarkGray)),
@@ -5340,7 +5364,7 @@ fn draw_dashboard_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     ]));
     lines.push(Line::from(vec![
         Span::styled("  Open: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(format!("{}", tc.open), Style::default().fg(Color::White)),
+        Span::styled(format!("{}", tc.open), Style::default().fg(text_primary(app.is_light_theme))),
         Span::styled("  Failed: ", Style::default().fg(Color::DarkGray)),
         Span::styled(format!("{}", tc.failed), Style::default().fg(Color::Red)),
         Span::styled("  Blocked: ", Style::default().fg(Color::DarkGray)),
@@ -5364,7 +5388,7 @@ fn draw_dashboard_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                 Style::default().fg(Color::Rgb(60, 60, 60)),
             ),
             Span::styled("] ", Style::default().fg(Color::DarkGray)),
-            Span::styled(format!("{}%", pct), Style::default().fg(Color::White)),
+            Span::styled(format!("{}%", pct), Style::default().fg(text_primary(app.is_light_theme))),
         ]));
     }
     lines.push(Line::from(""));
@@ -5765,10 +5789,10 @@ fn draw_agents_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                     let label_style = if i == 1 {
                         // Execution phase gets bold
                         Style::default()
-                            .fg(Color::White)
+                            .fg(text_primary(app.is_light_theme))
                             .add_modifier(Modifier::BOLD)
                     } else {
-                        Style::default().fg(Color::White)
+                        Style::default().fg(text_primary(app.is_light_theme))
                     };
 
                     let mut spans = vec![status_icon, Span::styled(phase_labels[i], label_style)];
@@ -5912,7 +5936,7 @@ fn draw_agents_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                     format_tokens(total_output)
                 ),
                 Style::default()
-                    .fg(Color::White)
+                    .fg(text_primary(app.is_light_theme))
                     .add_modifier(Modifier::BOLD),
             )];
             if total_cached > 0 {
@@ -5925,7 +5949,7 @@ fn draw_agents_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                 spans.push(Span::styled(
                     format!(" ${:.4}", total_cost),
                     Style::default()
-                        .fg(Color::White)
+                        .fg(text_primary(app.is_light_theme))
                         .add_modifier(Modifier::BOLD),
                 ));
             }
@@ -6327,6 +6351,7 @@ fn render_filter_picker_with_hits(
     parent_area: Rect,
     hits: &mut Vec<(super::state::LauncherListHit, Rect)>,
     list_area: &mut Rect,
+    is_light: bool,
 ) -> Vec<Line<'static>> {
     use super::state::LauncherListHit;
     let mut lines: Vec<Line> = Vec::new();
@@ -6409,7 +6434,7 @@ fn render_filter_picker_with_hits(
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::White)
+            Style::default().fg(text_primary(is_light))
         };
         let desc_short: String = desc.chars().take(w.saturating_sub(id.len() + 14)).collect();
         let line_idx = local_offset;
@@ -6688,13 +6713,14 @@ pub(crate) fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect
         }
     };
 
+    let is_light = app.is_light_theme;
     let section_style = |active: bool| {
         if active {
             Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::White)
+            Style::default().fg(text_primary(is_light))
         }
     };
 
@@ -6724,7 +6750,7 @@ pub(crate) fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect
             .fg(Color::Yellow)
             .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(Color::White)
+        Style::default().fg(text_primary(is_light))
     };
     let action_line_idx = lines.len();
     let action_y = area.y.saturating_add(action_line_idx as u16);
@@ -6820,7 +6846,7 @@ pub(crate) fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::White)
+            Style::default().fg(text_primary(is_light))
         };
         let suffix = if !available { " (not found)" } else { "" };
         let desc_short: String = desc
@@ -6879,6 +6905,7 @@ pub(crate) fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect
         area,
         &mut app.launcher_model_hits,
         &mut app.launcher_model_list_area,
+        app.is_light_theme,
     );
     lines.extend(model_lines);
     lines.push(Line::from(""));
@@ -6908,6 +6935,7 @@ pub(crate) fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect
             area,
             &mut app.launcher_endpoint_hits,
             &mut app.launcher_endpoint_list_area,
+            app.is_light_theme,
         );
         lines.extend(ep_lines);
         lines.push(Line::from(""));
@@ -6932,7 +6960,7 @@ pub(crate) fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect
                     .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(Color::White)
+                Style::default().fg(text_primary(is_light))
             };
             let model_str = entry.model.as_deref().unwrap_or("default");
             let ep_str = entry
@@ -6984,6 +7012,7 @@ fn draw_text_prompt(
     frame: &mut Frame,
     action: &TextPromptAction,
     editor: &mut edtui::EditorState,
+    is_light: bool,
 ) -> Rect {
     use edtui::{EditorTheme, EditorView};
     let is_multiline = matches!(action, TextPromptAction::EditDescription(_));
@@ -7017,7 +7046,7 @@ fn draw_text_prompt(
         let edit_area = Rect::new(inner.x, inner.y, inner.width, edit_height);
         let theme = EditorTheme::default()
             .hide_status_line()
-            .base(Style::default().fg(Color::White))
+            .base(Style::default().fg(text_primary(is_light)))
             .cursor_style(Style::default().fg(Color::Black).bg(Color::Yellow));
         frame.render_widget(EditorView::new(editor).wrap(true).theme(theme), edit_area);
         frame.render_widget(
@@ -7055,7 +7084,7 @@ fn draw_text_prompt(
         let editor_area = Rect::new(inner.x + 2, inner.y, inner.width.saturating_sub(2), 1);
         let theme = EditorTheme::default()
             .hide_status_line()
-            .base(Style::default().fg(Color::White))
+            .base(Style::default().fg(text_primary(is_light)))
             .cursor_style(Style::default().fg(Color::Black).bg(Color::Yellow));
         frame.render_widget(EditorView::new(editor).theme(theme), editor_area);
         if inner.height >= 3 {
@@ -7072,7 +7101,7 @@ fn draw_text_prompt(
 }
 
 /// Draw the task creation form overlay.
-fn draw_task_form(frame: &mut Frame, form: &TaskFormState) {
+fn draw_task_form(frame: &mut Frame, form: &TaskFormState, is_light: bool) {
     let size = frame.area();
     let width = 60.min(size.width.saturating_sub(4));
     let height = 20.min(size.height.saturating_sub(4));
@@ -7102,7 +7131,7 @@ fn draw_task_form(frame: &mut Frame, form: &TaskFormState) {
                     .add_modifier(Modifier::BOLD),
             )
         } else {
-            Span::styled(format!("  {}:", label), Style::default().fg(Color::White))
+            Span::styled(format!("  {}:", label), Style::default().fg(text_primary(is_light)))
         }
     };
 
@@ -7307,7 +7336,7 @@ fn draw_action_hints(frame: &mut Frame, app: &VizApp, area: Rect) {
     spans.push(Span::styled(
         format!(" {}", context_label),
         Style::default()
-            .fg(Color::White)
+            .fg(text_primary(app.is_light_theme))
             .add_modifier(Modifier::BOLD),
     ));
     spans.push(Span::styled(separator, sep_style));
@@ -7817,7 +7846,7 @@ fn draw_status_bar(frame: &mut Frame, app: &VizApp, area: Rect) {
             " {} tasks ({} done, {} open, {} active",
             c.total, c.done, c.open, c.in_progress
         ),
-        Style::default().fg(Color::White),
+        Style::default().fg(text_primary(app.is_light_theme)),
     ));
 
     if c.failed > 0 {
@@ -7827,7 +7856,7 @@ fn draw_status_bar(frame: &mut Frame, app: &VizApp, area: Rect) {
         ));
     }
 
-    spans.push(Span::styled(") ", Style::default().fg(Color::White)));
+    spans.push(Span::styled(") ", Style::default().fg(text_primary(app.is_light_theme))));
 
     if c.archived > 0 {
         spans.push(Span::styled(
@@ -7947,7 +7976,7 @@ fn draw_status_bar(frame: &mut Frame, app: &VizApp, area: Rect) {
     spans.push(Span::styled("| ", Style::default().fg(Color::DarkGray)));
     spans.push(Span::styled(
         format!("L{}/{} ", app.scroll.offset_y + 1, app.visible_line_count()),
-        Style::default().fg(Color::White),
+        Style::default().fg(text_primary(app.is_light_theme)),
     ));
 
     // Selected task indicator
@@ -8464,7 +8493,7 @@ fn draw_service_health_detail(frame: &mut Frame, app: &VizApp) {
 
     let mut lines: Vec<Line> = Vec::new();
     let label_style = Style::default().fg(Color::Cyan);
-    let value_style = Style::default().fg(Color::White);
+    let value_style = Style::default().fg(text_primary(app.is_light_theme));
     let dim_style = Style::default().fg(Color::DarkGray);
 
     // PID & uptime
@@ -8646,7 +8675,7 @@ fn draw_service_control_panel(frame: &mut Frame, app: &VizApp) {
     frame.render_widget(block, area);
     let mut lines: Vec<Line> = Vec::new();
     let label_style = Style::default().fg(Color::Cyan);
-    let value_style = Style::default().fg(Color::White);
+    let value_style = Style::default().fg(text_primary(app.is_light_theme));
     let dim_style = Style::default().fg(Color::DarkGray);
     let focus = &health.panel_focus;
     lines.push(Line::from(vec![
@@ -8842,11 +8871,11 @@ fn draw_service_control_panel(frame: &mut Frame, app: &VizApp) {
                     "This will kill {} running agents and stop the service.",
                     health.agents_alive
                 ),
-                Style::default().fg(Color::White),
+                Style::default().fg(text_primary(app.is_light_theme)),
             ),
         ]));
         lines.push(Line::from(vec![
-            Span::styled("  Are you sure? ", Style::default().fg(Color::White)),
+            Span::styled("  Are you sure? ", Style::default().fg(text_primary(app.is_light_theme))),
             Span::styled(
                 "[y]",
                 Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
@@ -8898,7 +8927,7 @@ fn control_panel_line<'a>(
     ])
 }
 
-fn draw_help_overlay(frame: &mut Frame) {
+fn draw_help_overlay(frame: &mut Frame, is_light: bool) {
     let size = frame.area();
     let width = 56.min(size.width.saturating_sub(4));
     let height = 50.min(size.height.saturating_sub(4));
@@ -8931,7 +8960,7 @@ fn draw_help_overlay(frame: &mut Frame) {
     let binding = |key: &str, desc: &str| -> Line {
         Line::from(vec![
             Span::styled(format!("  {:<14}", key), Style::default().fg(Color::Yellow)),
-            Span::styled(desc.to_string(), Style::default().fg(Color::White)),
+            Span::styled(desc.to_string(), Style::default().fg(text_primary(is_light))),
         ])
     };
 
@@ -9115,7 +9144,7 @@ fn draw_settings_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         let value_style = if i == selected && !app.settings_panel.focus_actions {
             Style::default().fg(Color::Black).bg(Color::Yellow)
         } else {
-            Style::default().fg(Color::White)
+            Style::default().fg(text_primary(app.is_light_theme))
         };
         let mut spans: Vec<Span<'static>> = Vec::new();
         spans.push(Span::styled(format!("  {:30}", e.key), key_style));
@@ -9436,12 +9465,12 @@ fn draw_config_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::White)
+            Style::default().fg(text_primary(app.is_light_theme))
         };
 
         let value_style = if is_editing {
             Style::default()
-                .fg(Color::White)
+                .fg(text_primary(app.is_light_theme))
                 .add_modifier(Modifier::BOLD)
         } else {
             let value_color = match &entry.edit_kind {
@@ -9675,7 +9704,7 @@ fn draw_add_endpoint_form(frame: &mut Frame, app: &VizApp, area: Rect) {
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::White)
+            Style::default().fg(text_primary(app.is_light_theme))
         };
 
         let display = if is_active && app.config_panel.editing {
@@ -9746,7 +9775,7 @@ fn draw_add_model_form(frame: &mut Frame, app: &VizApp, area: Rect) {
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::White)
+            Style::default().fg(text_primary(app.is_light_theme))
         };
 
         let display = if is_active && app.config_panel.editing {
@@ -15788,5 +15817,36 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn test_text_primary_returns_correct_color_per_theme() {
+        assert_eq!(text_primary(false), Color::White, "dark theme: primary text must be White");
+        assert_eq!(text_primary(true), Color::Reset, "light theme: primary text must be Reset (terminal default)");
+    }
+
+    #[test]
+    fn test_is_light_theme_defaults_to_false() {
+        use crate::tui::viz_viewer::state::VizApp;
+        let (viz, _) = build_hud_test_graph();
+        let app = VizApp::from_viz_output_for_test(&viz);
+        assert!(!app.is_light_theme, "default theme should be dark (is_light_theme = false)");
+    }
+
+    #[test]
+    fn test_light_theme_initialized_from_config() {
+        use crate::tui::viz_viewer::state::VizApp;
+        use workgraph::parser::save_graph;
+        let tmp = tempfile::tempdir().unwrap();
+        let wg_dir = tmp.path().join(".workgraph");
+        std::fs::create_dir_all(&wg_dir).unwrap();
+        save_graph(&WorkGraph::new(), &wg_dir.join("graph.jsonl")).unwrap();
+        std::fs::write(
+            wg_dir.join("config.toml"),
+            "[tui]\ncolor_theme = \"light\"\n",
+        )
+        .unwrap();
+        let app = VizApp::new(wg_dir, crate::commands::viz::VizOptions::default(), Some(false), None, true);
+        assert!(app.is_light_theme, "VizApp::new with color_theme='light' must set is_light_theme=true");
     }
 }

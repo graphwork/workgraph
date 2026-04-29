@@ -34,7 +34,17 @@ pub const TOOL_BORDER: Color = Color::DarkGray;
 pub const TOOL_CALL: Color = Color::Indexed(75); // soft cyan
 
 /// Tool result body — readable but distinguishable from assistant prose.
-pub const TOOL_RESULT: Color = Color::Indexed(252); // light gray
+/// On dark terminals: light gray (Indexed 252). On light terminals: terminal default.
+pub const TOOL_RESULT: Color = Color::Indexed(252); // light gray, dark-theme only
+
+/// Theme-aware tool result body color.
+pub fn tool_result_color(is_light: bool) -> Color {
+    if is_light {
+        Color::Reset
+    } else {
+        TOOL_RESULT
+    }
+}
 
 /// Tool error / failure surface — jumps out so failures don't get lost in
 /// a wash of normal output.

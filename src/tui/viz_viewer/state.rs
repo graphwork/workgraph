@@ -4932,6 +4932,11 @@ pub struct VizApp {
     /// Recent key presses for the feedback overlay, with timestamps.
     /// Newest entries at the back.
     pub key_feedback: VecDeque<(String, Instant)>,
+
+    // ── Theme ──
+    /// Whether the TUI should render for a light terminal background.
+    /// Set from `tui.color_theme = "light"` in config.
+    pub is_light_theme: bool,
 }
 
 /// Scroll state for a 2D viewport.
@@ -5184,6 +5189,7 @@ impl VizApp {
             tracer: None,
             key_feedback_enabled: false,
             key_feedback: VecDeque::new(),
+            is_light_theme: config.tui.color_theme == "light",
         };
         app.start_fs_watcher();
         // Load graph once for both viz and stats on startup.
@@ -9523,6 +9529,7 @@ impl VizApp {
             tracer: None,
             key_feedback_enabled: false,
             key_feedback: VecDeque::new(),
+            is_light_theme: false,
         }
     }
 
@@ -14919,7 +14926,10 @@ impl VizApp {
             }
             "tui.default_layout" => config.tui.default_layout = new_value,
             "tui.default_inspector_size" => config.tui.default_inspector_size = new_value,
-            "tui.color_theme" => config.tui.color_theme = new_value,
+            "tui.color_theme" => {
+                config.tui.color_theme = new_value.clone();
+                self.is_light_theme = new_value == "light";
+            }
             "tui.timestamp_format" => config.tui.timestamp_format = new_value,
             "tui.show_token_counts" => config.tui.show_token_counts = new_value == "on",
             "tui.message_name_threshold" => {
