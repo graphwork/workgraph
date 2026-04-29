@@ -443,3 +443,13 @@ owners = [
 ]
 description = "Named profiles: a profile file with unknown field [tui] is rejected at parse time with a clear error naming the field."
 timeout_seconds = 30
+
+[[scenario]]
+name = "pty_resize_dedup_no_scrollback_echo"
+script = "scenarios/pty_resize_dedup_no_scrollback_echo.sh"
+owners = [
+    "fix-tui-pty",
+    "diagnose-tui-pty",
+]
+description = "PTY scrollback dedup: verifies that SIGWINCH reflow echo rows are hidden from scrollback navigation after a terminal resize. Runs the two unit tests for the resize-dedup code path in PtyPane (sigwinch_reflow_duplicates_scrollback_and_dedup_hides_them + scroll_up_skips_sigwinch_hidden_rows)."
+timeout_seconds = 120
