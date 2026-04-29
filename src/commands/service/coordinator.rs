@@ -15,7 +15,7 @@ use workgraph::agency::{
     render_assigner_mode_context, save_assignment_record,
 };
 use workgraph::chat;
-use workgraph::config::Config;
+use workgraph::config::{Config, DispatchRole};
 use workgraph::graph::{
     LogEntry, Node, PRIORITY_DEFAULT, PRIORITY_IDLE, PRIORITY_NORMAL, Priority, Status, Task,
     WaitCondition, WaitSpec, boost_priority, evaluate_all_cycle_failure_restarts,
@@ -2983,18 +2983,27 @@ fn spawn_eval_inline(
         special_agent_verified.as_deref(),
     );
 
-    // Agency one-shot tasks (.evaluate-* / .flip-*) run on the claude CLI
-    // via run_lightweight_llm_call inside the spawned `wg evaluate` command.
-    // Register them with executor="claude" so observability matches reality
-    // (the binary that ends up doing the LLM call is `claude`, just like
-    // worker agents). The legacy "eval" label was misleading — there is
-    // no separate eval handler.
+    // Agency one-shot tasks (.evaluate-* / .flip-*) run on whichever CLI
+    // handler the user has configured for the role: claude:haiku by default
+    // (per CLAUDE.md "pinned to claude:haiku"), but `[models.evaluator]` /
+    // `[models.flip_*]` overrides win — explicit overrides win, cascade
+    // does not. Resolve once here so the registry display matches what
+    // run_lightweight_llm_call will actually invoke.
+    let eval_role = if eval_task_id.starts_with(".flip-") {
+        DispatchRole::FlipInference
+    } else {
+        DispatchRole::Evaluator
+    };
+    let eval_dispatch =
+        workgraph::service::llm::resolve_agency_dispatch(&config, eval_role);
+    let eval_executor = eval_dispatch.handler.as_str();
+    let eval_recorded_model = eval_dispatch.raw_spec.as_str();
     write_inline_artifacts(
         &output_dir,
         &agent_id,
         eval_task_id,
-        "claude",
-        evaluator_model,
+        eval_executor,
+        Some(evaluator_model.unwrap_or(eval_recorded_model)),
         &script,
     );
 
@@ -3049,9 +3058,9 @@ fn spawn_eval_inline(
     locked_registry.register_agent_with_model(
         pid,
         eval_task_id,
-        "claude",
+        eval_executor,
         &output_file_str,
-        evaluator_model,
+        Some(evaluator_model.unwrap_or(eval_recorded_model)),
     );
     locked_registry
         .save()
@@ -3167,17 +3176,24 @@ fi
 exit $EXIT_CODE"#,
     );
 
-    // Agency one-shot tasks (.assign-*) run on the claude CLI via
-    // run_lightweight_llm_call inside the spawned `wg assign` command.
-    // Register them with executor="claude" / model="claude:haiku" so
-    // observability matches reality. The legacy "assign" label was
-    // misleading — there is no separate assignment handler.
+    // Agency one-shot tasks (.assign-*) run on whichever CLI handler the
+    // user has configured for the Assigner role: claude:haiku by default,
+    // or whatever `[models.assigner]` specifies (codex, claude, native).
+    // Resolve once so the registry display matches what
+    // run_lightweight_llm_call will actually invoke.
+    let assign_config = Config::load_or_default(dir);
+    let assign_dispatch = workgraph::service::llm::resolve_agency_dispatch(
+        &assign_config,
+        DispatchRole::Assigner,
+    );
+    let assign_executor = assign_dispatch.handler.as_str();
+    let assign_model = assign_dispatch.raw_spec.as_str();
     write_inline_artifacts(
         &output_dir,
         &agent_id,
         assign_task_id,
-        "claude",
-        Some("claude:haiku"),
+        assign_executor,
+        Some(assign_model),
         &script,
     );
 
@@ -3232,9 +3248,9 @@ exit $EXIT_CODE"#,
     locked_registry.register_agent_with_model(
         pid,
         assign_task_id,
-        "claude",
+        assign_executor,
         &output_file_str,
-        Some("claude:haiku"),
+        Some(assign_model),
     );
     locked_registry
         .save()

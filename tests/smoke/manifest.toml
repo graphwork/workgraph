@@ -276,6 +276,16 @@ description = "Inline spawn of an `.evaluate-*` task must register the agent wit
 timeout_seconds = 60
 
 [[scenario]]
+name = "agency_codex_override_routes_to_codex"
+script = "scenarios/agency_codex_override_routes_to_codex.sh"
+owners = [
+    "fix-agency-tasks",
+    "smoke-gate-is",
+]
+description = "Agency MUST honor explicit `[models.assigner]` / `[models.evaluator]` / `[models.flip_*]` overrides per CLAUDE.md 'explicit overrides win, cascade does not'. Regression for fix-agency-tasks: `wg init --route codex-cli` writes codex:* per-role overrides but the spawn site hard-coded executor=claude, model=claude:haiku — and `run_lightweight_llm_call` collapsed `codex:` → `oai-compat`, attempting an HTTP call with no key. Asserts `.assign-*` inline spawn registers with executor=codex + model=codex:* in both registry.json and metadata.json when the project config has the codex assigner override."
+timeout_seconds = 60
+
+[[scenario]]
 name = "dispatcher_kick_bypasses_settling_delay"
 script = "scenarios/dispatcher_kick_bypasses_settling_delay.sh"
 owners = [
