@@ -332,9 +332,10 @@ script = "scenarios/codex_chat_pty_passes_bypass_approvals.sh"
 owners = [
     "fix-codex-chat",
     "fix-codex-chat-2",
+    "fix-pass-no",
     "smoke-gate-is",
 ]
-description = "Pins fix-codex-chat (bypass flag) AND fix-codex-chat-2 (correct cwd + chat_dir add-dir). The codex chat agent in the wg TUI MUST be launched with --dangerously-bypass-approvals-and-sandbox AND with cwd = project root (NOT .wg/chat/chat-N/) AND with --add-dir <chat_dir> so per-chat scratch stays writable. Drives `wg tui` with a fake codex shim that captures argv + PWD; asserts all three. The previous behaviour (cwd = chat_dir) made the codex banner report 'directory: <proj>/.wg/chat/chat-0' and broke shell command discovery for the chat agent. Mirrors the claude path's --dangerously-skip-permissions + project-root cwd posture. No real codex CLI / LLM required."
+description = "Pins fix-codex-chat (bypass flag) AND fix-codex-chat-2 (correct cwd + chat_dir add-dir) AND fix-pass-no (--no-alt-screen). The codex chat agent in the wg TUI MUST be launched with --dangerously-bypass-approvals-and-sandbox AND with cwd = project root (NOT .wg/chat/chat-N/) AND with --add-dir <chat_dir> so per-chat scratch stays writable AND with --no-alt-screen so codex emits line-streamed output instead of alternate-screen TUI mode (which loses scrollback and stacks animation frames in the wg PTY emulator). Drives `wg tui` with a fake codex shim that captures argv + PWD; asserts all four. The previous behaviour (cwd = chat_dir) made the codex banner report 'directory: <proj>/.wg/chat/chat-0' and broke shell command discovery for the chat agent. Mirrors the claude path's --dangerously-skip-permissions + project-root cwd posture. No real codex CLI / LLM required."
 timeout_seconds = 60
 
 [[scenario]]

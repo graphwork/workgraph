@@ -2,7 +2,7 @@
 # Scenario: codex_chat_pty_passes_bypass_approvals
 #
 # Pins fix-codex-chat (bypass flag) AND fix-codex-chat-2 (correct cwd
-# + chat_dir add-dir).
+# + chat_dir add-dir) AND fix-pass-no (--no-alt-screen).
 #
 # fix-codex-chat: the codex chat agent in the wg TUI MUST be launched
 # with `--dangerously-bypass-approvals-and-sandbox`. Without this flag
@@ -25,6 +25,13 @@
 # --dangerously-skip-permissions` in claude-handler/PTY paths. Both
 # paths share this bypass posture.
 #
+# fix-pass-no: codex defaults to alternate-screen TUI mode, which the
+# wg PTY emulator handles poorly (lost scrollback, stacked animation
+# frames, fragile cursor-overwrite). The codex CLI exposes
+# `--no-alt-screen` for inline / line-streamed output — the same shape
+# the claude chat path emits and the shape our emulator handles
+# cleanly. The codex chat PTY MUST pass it.
+#
 # This scenario installs a fake `codex` shim that captures its argv +
 # cwd to a file, drives `wg tui` long enough for the auto-PTY to spawn
 # the shim once, and asserts:
@@ -33,6 +40,7 @@
 #      writable from the project-root cwd
 #   3. PWD at spawn time is the project root (the scratch dir), NOT
 #      the per-chat scratch dir under `.wg/chat/chat-N/`
+#   4. argv contains `--no-alt-screen` (fix-pass-no)
 # A pure source-grep would fire on innocent renames; argv + PWD
 # capture verifies the actual launch behavior.
 #
@@ -164,10 +172,21 @@ case "$add_dir_value" in
         ;;
 esac
 
+# Hard assertion 4 (fix-pass-no): --no-alt-screen MUST be in argv so
+# codex emits inline / line-streamed output instead of alternate-
+# screen TUI mode. Without it, scrollback is lost, animation frames
+# stack, and cursor-overwrite paths exercise our PTY emulator's
+# weakest spots.
+if ! grep -q -- '--no-alt-screen' "$argv_log"; then
+    loud_fail "codex chat PTY launched WITHOUT --no-alt-screen. Without it codex defaults to alternate-screen mode, which the wg PTY emulator handles poorly (lost scrollback, stacked animation frames). Captured argv:
+$(cat "$argv_log")"
+fi
+
 echo "PASS: codex chat PTY"
 echo "  flag:    --dangerously-bypass-approvals-and-sandbox  ✓"
 echo "  cwd:     $captured_cwd_resolved (project root)        ✓"
 echo "  add-dir: $add_dir_value                               ✓"
+echo "  flag:    --no-alt-screen                              ✓"
 echo "Captured argv:"
 cat "$argv_log"
 exit 0

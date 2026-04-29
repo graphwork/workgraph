@@ -1155,6 +1155,12 @@ pub fn resolve_chat_pty_executor_and_model(
 /// We pass it via `--add-dir` so the agent can still write per-chat
 /// scratch files (chat history persistence, codex's `.codex-session-id`
 /// marker) without giving up project-root visibility.
+///
+/// The args also include `--no-alt-screen` (fix-pass-no): codex
+/// defaults to alternate-screen TUI mode, which the wg PTY emulator
+/// handles poorly (lost scrollback, stacked animation frames, fragile
+/// cursor-overwrite). `--no-alt-screen` switches codex to inline /
+/// line-streamed output — the same shape the claude chat path emits.
 pub fn build_codex_chat_pty_args(
     prior_session_id: Option<&str>,
     pty_marker_exists: bool,
@@ -1174,6 +1180,14 @@ pub fn build_codex_chat_pty_args(
     // agent cannot do its job. Mirrors the claude path's
     // `--dangerously-skip-permissions`.
     args.push("--dangerously-bypass-approvals-and-sandbox".to_string());
+    // Disable codex's alternate-screen TUI mode (fix-pass-no). Codex
+    // defaults to alt-screen, which loses scrollback (alt-screen
+    // content never enters the main buffer), stacks animation frames,
+    // and exercises cursor-overwrite paths our PTY emulator handles
+    // poorly. `--no-alt-screen` switches codex to inline / line-
+    // streamed output — the same mode the claude path emits, which
+    // our emulator handles cleanly.
+    args.push("--no-alt-screen".to_string());
     if let Some(dir) = chat_dir {
         args.push("--add-dir".to_string());
         args.push(dir.display().to_string());
@@ -24518,6 +24532,51 @@ mod build_codex_chat_pty_args_tests {
         assert!(
             !args.iter().any(|a| a == "--add-dir"),
             "expected no --add-dir flag when chat_dir is None; got: {:?}",
+            args
+        );
+    }
+
+    /// Regression lock for fix-pass-no.
+    ///
+    /// Codex defaults to alternate-screen TUI mode, which the wg PTY
+    /// emulator handles poorly: scrollback is lost, animation frames
+    /// stack on scroll-back, and cursor-overwrite logic struggles. Our
+    /// emulator handles line-streamed output (the claude default) well.
+    /// Codex exposes `--no-alt-screen` precisely for this case
+    /// ("inline mode, preserving terminal scrollback history" — useful
+    /// in multiplexers that disable scrollback in the alt-screen
+    /// buffer). Passing it eliminates the alt-screen flicker, restores
+    /// scrollback, and matches the claude path's output mode.
+    ///
+    /// If codex renames or removes this flag in the future, this test
+    /// fails and the doc comment in `build_codex_chat_pty_args` is the
+    /// breadcrumb to update both call sites.
+    #[test]
+    fn fresh_session_includes_no_alt_screen() {
+        let args = build_codex_chat_pty_args(None, false, None, None);
+        assert!(
+            args.contains(&"--no-alt-screen".to_string()),
+            "codex chat args MUST include --no-alt-screen so output streams into main scrollback; got: {:?}",
+            args
+        );
+    }
+
+    #[test]
+    fn resume_with_session_id_includes_no_alt_screen() {
+        let args = build_codex_chat_pty_args(Some("abc-123-uuid"), false, None, None);
+        assert!(
+            args.contains(&"--no-alt-screen".to_string()),
+            "codex resume <id> args MUST include --no-alt-screen; got: {:?}",
+            args
+        );
+    }
+
+    #[test]
+    fn resume_last_includes_no_alt_screen() {
+        let args = build_codex_chat_pty_args(None, true, None, None);
+        assert!(
+            args.contains(&"--no-alt-screen".to_string()),
+            "codex resume --last args MUST include --no-alt-screen; got: {:?}",
             args
         );
     }
