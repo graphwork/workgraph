@@ -330,8 +330,9 @@ name = "codex_init_route_has_correct_defaults"
 script = "scenarios/codex_init_route_has_correct_defaults.sh"
 owners = [
     "fix-codex-cli",
+    "bump-codex-defaults",
 ]
-description = "Pins the codex-cli route defaults regression: `wg init --route codex-cli` must write gpt-5.4 (not o1-pro) as the agent model, full tier set (gpt-5.4-mini/gpt-5.4/gpt-5.5), and [models.evaluator]/[models.assigner] pointing to gpt-5.4-mini — so agency meta-tasks run on codex, not fall back to claude:haiku. Also verifies `wg config lint` flags the old codex:o1-pro string. No LLM endpoint needed."
+description = "Pins the codex-cli route defaults regression: `wg init --route codex-cli` must write gpt-5.5 (newest frontier; user-preferred default per bump-codex-defaults) as the agent/dispatcher model, full tier set (gpt-5.4-mini/gpt-5.4/gpt-5.5), [models.evaluator]/[models.assigner]/[models.flip_inference]/[models.flip_comparison] all pointing to gpt-5.4-mini — so agency meta-tasks AND FLIP scoring run on codex, not fall back to claude:haiku. Also verifies `wg config lint` flags the old codex:o1-pro string. No LLM endpoint needed."
 timeout_seconds = 30
 
 [[scenario]]

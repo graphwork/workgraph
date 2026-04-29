@@ -421,9 +421,10 @@ See §2.5 example. Mirrors `wg init --route claude-cli` output minus the daemon-
 
 ### 7.2 `codex.toml`
 See §2.5 example. Model strings cross-checked against `docs/config-ux-design.md` §3.2b (codex CLI v0.124.0 mapping):
-- worker / standard: `codex:gpt-5.4`
+- worker: `codex:gpt-5.5` (premium tier — newest frontier, per bump-codex-defaults 2026-04-28)
+- standard: `codex:gpt-5.4` (sonnet-equivalent)
 - premium: `codex:gpt-5.5`
-- agency / fast: `codex:gpt-5.4-mini`
+- agency / fast / FLIP: `codex:gpt-5.4-mini`
 
 ### 7.3 `wgnext.toml`
 See §2.5 example. Defaults to `local:qwen3-coder-30b` at `http://127.0.0.1:8088`. The user is expected to edit both fields to match their local nex setup.

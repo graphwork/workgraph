@@ -7,13 +7,21 @@
 # so agency meta-tasks (.evaluate-*, .flip-*, .assign-*) silently fell back to
 # claude:haiku even on a codex-only project.
 #
-# Fix (2026-04-28): codex-cli route now writes:
-#   [agent].model          = codex:gpt-5.4        (balanced/sonnet-equivalent)
-#   [tiers].fast           = codex:gpt-5.4-mini   (haiku-equivalent)
-#   [tiers].standard       = codex:gpt-5.4
-#   [tiers].premium        = codex:gpt-5.5        (opus-equivalent, released 2026-04-23)
-#   [models.evaluator].model = codex:gpt-5.4-mini
-#   [models.assigner].model  = codex:gpt-5.4-mini
+# Bumped (bump-codex-defaults, 2026-04-28): worker default raised to gpt-5.5
+# (newest frontier) per user preference for newest capability. Meta-tasks stay
+# on gpt-5.4-mini (no gpt-5.5-mini exists). FLIP scoring also pinned to
+# gpt-5.4-mini so it can't fall through to a silent claude:haiku default.
+#
+# Current contract: codex-cli route writes:
+#   [agent].model            = codex:gpt-5.5       (newest frontier, premium tier)
+#   [dispatcher].model       = codex:gpt-5.5
+#   [tiers].fast             = codex:gpt-5.4-mini  (haiku-equivalent)
+#   [tiers].standard         = codex:gpt-5.4       (sonnet-equivalent, kept)
+#   [tiers].premium          = codex:gpt-5.5       (opus-equivalent)
+#   [models.evaluator].model      = codex:gpt-5.4-mini
+#   [models.assigner].model       = codex:gpt-5.4-mini
+#   [models.flip_inference].model = codex:gpt-5.4-mini
+#   [models.flip_comparison].model = codex:gpt-5.4-mini
 #
 # This smoke pins the `wg init --dry-run` output and `wg config show` output
 # against those assertions. No LLM endpoint is required — this is a pure
@@ -43,9 +51,9 @@ run_wg() {
 dry_out=$(run_wg init --route codex-cli --dry-run 2>&1) || \
     loud_fail "wg init --route codex-cli --dry-run failed: $dry_out"
 
-# Agent/dispatcher model must be the balanced tier.
-if ! grep -q 'model = "codex:gpt-5.4"' <<<"$dry_out"; then
-    loud_fail "dry-run output missing 'model = \"codex:gpt-5.4\"'. Got:\n$dry_out"
+# Agent/dispatcher model must be the premium tier (gpt-5.5, newest frontier).
+if ! grep -q 'model = "codex:gpt-5.5"' <<<"$dry_out"; then
+    loud_fail "dry-run output missing 'model = \"codex:gpt-5.5\"'. Got:\n$dry_out"
 fi
 
 # Tiers must all be present with the correct versioned strings.
@@ -62,6 +70,22 @@ fi
 # Agency role-split models must be present (the regression: these were missing).
 if ! grep -q 'codex:gpt-5.4-mini' <<<"$dry_out"; then
     loud_fail "dry-run output missing codex:gpt-5.4-mini for evaluator/assigner. Got:\n$dry_out"
+fi
+
+# FLIP scoring must be pinned to gpt-5.4-mini (bump-codex-defaults regression
+# bar): without [models.flip_inference]/[models.flip_comparison] entries, FLIP
+# would silently fall through to the built-in claude:haiku on a codex-only
+# project.
+if ! grep -q '\[models.flip_inference\]' <<<"$dry_out"; then
+    loud_fail "dry-run output missing [models.flip_inference] section. Got:\n$dry_out"
+fi
+if ! grep -q '\[models.flip_comparison\]' <<<"$dry_out"; then
+    loud_fail "dry-run output missing [models.flip_comparison] section. Got:\n$dry_out"
+fi
+
+# Agent/dispatcher must NOT regress to gpt-5.4 (pre-bump default).
+if grep -qE '^model = "codex:gpt-5\.4"$' <<<"$dry_out"; then
+    loud_fail "dry-run output has pre-bump 'model = \"codex:gpt-5.4\"' for agent/dispatcher. Got:\n$dry_out"
 fi
 
 # No deprecated model strings.

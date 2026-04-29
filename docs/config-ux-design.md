@@ -111,7 +111,7 @@ is_default = true
 
 (Audit §3 line-280 footnote: replace stale `claude-sonnet-4` with `claude-sonnet-4-6` in `openrouter_default_registry()` — handled in implement task.)
 
-### 3.2b `~/.wg/config.toml` — codex-cli route (updated 2026-04-28)
+### 3.2b `~/.wg/config.toml` — codex-cli route (updated 2026-04-28; bumped 2026-04-28 by bump-codex-defaults)
 
 For users running the OpenAI Codex CLI. Model tier mapping as of codex CLI v0.124.0:
 
@@ -120,6 +120,11 @@ For users running the OpenAI Codex CLI. Model tier mapping as of codex CLI v0.12
 | fast (haiku-equiv) | `codex:gpt-5.4-mini` | OpenAI's recommended subagent model; ~3x cheaper than gpt-5.4 |
 | standard (sonnet-equiv) | `codex:gpt-5.4` | Codex CLI default as of v0.124.0; 1M context |
 | premium (opus-equiv) | `codex:gpt-5.5` | Released 2026-04-23; OpenAI's current frontier model |
+
+Worker default = premium (`codex:gpt-5.5`). User preference: prefer newest
+capability for workers; the 2x cost vs gpt-5.4 is acceptable since gpt-5.5 is
+still ~3x cheaper than `claude:opus` per MTok. Meta-tasks (eval / FLIP /
+assign) stay on `gpt-5.4-mini` — there is no `gpt-5.5-mini`.
 
 **Deprecated model strings** (migrate with `wg migrate config`):
 - `codex:o1-pro` → `codex:gpt-5.4` (shutdown 2026-10-23)
@@ -132,7 +137,7 @@ For users running the OpenAI Codex CLI. Model tier mapping as of codex CLI v0.12
 # ~/.wg/config.toml — written by `wg config init --global --route codex-cli`
 
 [agent]
-model = "codex:gpt-5.4"
+model = "codex:gpt-5.5"
 
 [tiers]
 fast = "codex:gpt-5.4-mini"
@@ -144,9 +149,15 @@ model = "codex:gpt-5.4-mini"
 
 [models.assigner]
 model = "codex:gpt-5.4-mini"
+
+[models.flip_inference]
+model = "codex:gpt-5.4-mini"
+
+[models.flip_comparison]
+model = "codex:gpt-5.4-mini"
 ```
 
-The `[models.evaluator]` / `[models.assigner]` sections are critical — without them, agency meta-tasks (`.evaluate-*`, `.flip-*`, `.assign-*`) silently fall back to the built-in `claude:haiku` even on an all-codex project.
+The `[models.evaluator]` / `[models.assigner]` / `[models.flip_inference]` / `[models.flip_comparison]` sections are critical — without them, agency meta-tasks (`.evaluate-*`, `.flip-*`, `.assign-*`) silently fall back to the built-in `claude:haiku` even on an all-codex project.
 
 ### 3.3 `.wg/config.toml` — minimal project (the workgraph repo case)
 
@@ -204,7 +215,7 @@ Per `feedback_launcher_history_in_config_ui.md`: the "what model?" / "what endpo
    ─────
    [Choose route default]
      claude:opus       (claude CLI route)
-     codex:gpt-5.4     (codex CLI route)
+     codex:gpt-5.5     (codex CLI route)
      openrouter:...    (openrouter route)
      local:...         (local nex route)
    [Type custom...]

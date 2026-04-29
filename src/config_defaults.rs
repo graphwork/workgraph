@@ -279,24 +279,37 @@ fn codex_cli_config(params: &RouteParams) -> Config {
         premium: Some("codex:gpt-5.5".to_string()),
     };
 
-    // Worker default: codex:gpt-5.4 (balanced/sonnet-equivalent). The
-    // codex CLI's own default as of v0.124.0. User --model overrides.
+    // Worker default: codex:gpt-5.5 (premium tier — newest frontier model,
+    // released 2026-04-23). User preference: prefer newest capability for
+    // workers; the 2x cost vs gpt-5.4 is acceptable given gpt-5.5 is still
+    // ~3x cheaper than claude:opus per MTok. User --model overrides.
     let agent_model = params
         .model
         .clone()
-        .unwrap_or_else(|| "codex:gpt-5.4".to_string());
+        .unwrap_or_else(|| "codex:gpt-5.5".to_string());
     let agent_model = ensure_provider_prefix(&agent_model, "codex");
     config.agent.model = agent_model.clone();
     config.coordinator.model = Some(agent_model.clone());
 
-    // Eval / assign default to gpt-5.4-mini (cheap/haiku-equivalent).
+    // Eval / assign / flip default to gpt-5.4-mini (cheap/haiku-equivalent).
     // Agency meta-tasks (evaluate, FLIP, assign) need only short structured
-    // outputs — the mini model is sufficient and ~3x cheaper than gpt-5.4.
+    // outputs — the mini model is sufficient and the cheapest tier.
+    // Pin flip_inference + flip_comparison too so FLIP scoring doesn't
+    // silently fall through to the built-in claude:haiku default on a
+    // codex-only project.
     config.models = split_role_models_routing(
         &agent_model,
         "codex:gpt-5.4-mini",
         "codex:gpt-5.4-mini",
     );
+    let flip_role = RoleModelConfig {
+        provider: None,
+        model: Some("codex:gpt-5.4-mini".to_string()),
+        tier: None,
+        endpoint: None,
+    };
+    config.models.flip_inference = Some(flip_role.clone());
+    config.models.flip_comparison = Some(flip_role);
 
     config
 }
@@ -719,8 +732,8 @@ mod tests {
     fn test_route_codex_cli_role_split() {
         let config = config_for_route(SetupRoute::CodexCli, RouteParams::default());
         assert_eq!(
-            config.agent.model, "codex:gpt-5.4",
-            "codex-cli agent should default to gpt-5.4 (balanced/sonnet-equivalent)"
+            config.agent.model, "codex:gpt-5.5",
+            "codex-cli agent should default to gpt-5.5 (premium tier — newest frontier)"
         );
         let evaluator = config.models.evaluator.as_ref().unwrap();
         assert_eq!(
@@ -733,6 +746,18 @@ mod tests {
             assigner.model.as_deref(),
             Some("codex:gpt-5.4-mini"),
             "codex-cli assigner should default to gpt-5.4-mini (cheap/haiku-equivalent)"
+        );
+        let flip_inference = config.models.flip_inference.as_ref().unwrap();
+        assert_eq!(
+            flip_inference.model.as_deref(),
+            Some("codex:gpt-5.4-mini"),
+            "codex-cli flip_inference should be pinned to gpt-5.4-mini (no silent claude:haiku fallback)"
+        );
+        let flip_comparison = config.models.flip_comparison.as_ref().unwrap();
+        assert_eq!(
+            flip_comparison.model.as_deref(),
+            Some("codex:gpt-5.4-mini"),
+            "codex-cli flip_comparison should be pinned to gpt-5.4-mini (no silent claude:haiku fallback)"
         );
     }
 
@@ -807,9 +832,9 @@ mod tests {
 
         assert_tiers_filled(&config);
 
-        // Default = balanced tier model = codex:gpt-5.4 (sonnet-equivalent).
-        assert_eq!(config.agent.model, "codex:gpt-5.4");
-        assert_eq!(config.coordinator.model.as_deref(), Some("codex:gpt-5.4"));
+        // Default = premium tier model = codex:gpt-5.5 (newest frontier).
+        assert_eq!(config.agent.model, "codex:gpt-5.5");
+        assert_eq!(config.coordinator.model.as_deref(), Some("codex:gpt-5.5"));
 
         assert_models_evaluator_and_assigner_pinned(&config);
 
