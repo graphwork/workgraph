@@ -336,6 +336,16 @@ description = "Pins the codex-cli route defaults regression: `wg init --route co
 timeout_seconds = 30
 
 [[scenario]]
+name = "codex_cli_fresh_init_runtime"
+script = "scenarios/codex_cli_fresh_init_runtime.sh"
+owners = [
+    "fix-wg-init",
+    "bump-codex-defaults",
+]
+description = "Pins fix-wg-init: `wg init --route codex-cli` followed by `WG_DIR=<project_root> wg service start` (the user's natural mistake — pointing WG_DIR at the project root rather than the .wg subdir) must produce a fully working dispatcher that loads project codex:gpt-5.5 (not global claude:opus), writes service files under .wg/service/ (not sibling service/), watches .wg/graph.jsonl (not sibling graph.jsonl), logs no `Failed to load graph for task-aware reaping` tick errors, and propagates WG_EXECUTOR_TYPE=codex + WG_MODEL=codex:gpt-5.5 through the spawn-task → codex-handler chain. No LLM endpoint needed (spawn-task --dry-run prints the resolved invocation)."
+timeout_seconds = 60
+
+[[scenario]]
 name = "purge_chats_skips_active_by_default"
 script = "scenarios/purge_chats_skips_active_by_default.sh"
 owners = [

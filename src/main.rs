@@ -60,12 +60,12 @@ fn resolve_workgraph_dir(
 ) -> PathBuf {
     // 1. Explicit CLI flag
     if let Some(p) = cli_dir {
-        return p;
+        return descend_into_wg_subdir_if_project_root(p);
     }
 
     // 2. WG_DIR env var
     if let Some(p) = env_dir.filter(|p| !p.as_os_str().is_empty()) {
-        return p;
+        return descend_into_wg_subdir_if_project_root(p);
     }
 
     // 3. Walk up from cwd looking for an existing workgraph dir.
@@ -99,6 +99,39 @@ fn resolve_workgraph_dir(
     // 5. Default: ./.wg in current directory (new projects get the short name)
     cwd.map(|c| c.join(".wg"))
         .unwrap_or_else(|| PathBuf::from(".wg"))
+}
+
+/// If the given path looks like a project root containing a `.wg` or
+/// `.workgraph` subdir, descend into that subdir. Otherwise return the
+/// path unchanged.
+///
+/// This is what makes `WG_DIR=<project_root>` and `--dir <project_root>`
+/// behave the same as `cd <project_root>` with no env var: the user
+/// usually means "the workgraph for this project", not "use this exact
+/// directory as the workgraph dir even though it's missing graph.jsonl".
+///
+/// The descent is skipped when:
+///   - the path's basename is itself `.wg` or `.workgraph` (already a
+///     workgraph dir — don't descend into a nested .wg/.wg/),
+///   - the path itself contains `graph.jsonl` (treat as a literal
+///     workgraph dir even if its basename is unusual — this preserves
+///     the legacy "WG_DIR points at the actual graph dir" behavior for
+///     users who already do that).
+fn descend_into_wg_subdir_if_project_root(p: PathBuf) -> PathBuf {
+    let basename = p.file_name().and_then(|n| n.to_str());
+    if matches!(basename, Some(".wg") | Some(".workgraph")) {
+        return p;
+    }
+    if p.join("graph.jsonl").is_file() {
+        return p;
+    }
+    for name in WORKGRAPH_DIR_NAMES {
+        let candidate = p.join(name);
+        if candidate.is_dir() {
+            return candidate;
+        }
+    }
+    p
 }
 
 #[cfg(test)]
@@ -239,6 +272,116 @@ mod resolver_tests {
         let result = resolve_workgraph_dir(None, None, Some(outside.clone()), Some(home));
         // New default is `.wg`
         assert_eq!(result, outside.join(".wg"));
+    }
+
+    /// Regression for fix-wg-init: `WG_DIR=<project_root>` (a path that
+    /// contains a `.wg` subdir but is NOT itself named `.wg`) must
+    /// descend into the subdir. Otherwise every subsystem looks for
+    /// graph.jsonl, service/, agency/ literally inside the project
+    /// root, breaking the dispatcher.
+    #[test]
+    fn wg_dir_descends_into_dot_wg_subdir() {
+        let tmp = TempDir::new().unwrap();
+        let project = tmp.path().join("myproj");
+        let wg = project.join(".wg");
+        std::fs::create_dir_all(&wg).unwrap();
+        // WG_DIR points at the project root, not the .wg subdir.
+        let result = resolve_workgraph_dir(
+            None,
+            Some(project.clone()),
+            None,
+            Some(tmp.path().to_path_buf()),
+        );
+        assert_eq!(result, wg, "WG_DIR=<project_root> must descend into .wg");
+    }
+
+    /// Same descent logic for the legacy `.workgraph` name.
+    #[test]
+    fn wg_dir_descends_into_legacy_workgraph_subdir() {
+        let tmp = TempDir::new().unwrap();
+        let project = tmp.path().join("myproj");
+        let legacy = project.join(".workgraph");
+        std::fs::create_dir_all(&legacy).unwrap();
+        let result = resolve_workgraph_dir(
+            None,
+            Some(project.clone()),
+            None,
+            Some(tmp.path().to_path_buf()),
+        );
+        assert_eq!(
+            result, legacy,
+            "WG_DIR=<project_root> must descend into legacy .workgraph"
+        );
+    }
+
+    /// `--dir <project_root>` should descend into `.wg` for the same
+    /// reason WG_DIR does — the user's mental model is "this is the
+    /// project, find its workgraph."
+    #[test]
+    fn cli_dir_descends_into_dot_wg_subdir() {
+        let tmp = TempDir::new().unwrap();
+        let project = tmp.path().join("myproj");
+        let wg = project.join(".wg");
+        std::fs::create_dir_all(&wg).unwrap();
+        let result = resolve_workgraph_dir(
+            Some(project.clone()),
+            None,
+            None,
+            Some(tmp.path().to_path_buf()),
+        );
+        assert_eq!(result, wg);
+    }
+
+    /// If WG_DIR already points at a `.wg` directory, leave it alone —
+    /// don't try to descend into `<wg>/.wg/`.
+    #[test]
+    fn wg_dir_pointing_at_dot_wg_directly_is_unchanged() {
+        let tmp = TempDir::new().unwrap();
+        let wg = tmp.path().join("myproj/.wg");
+        std::fs::create_dir_all(&wg).unwrap();
+        let result =
+            resolve_workgraph_dir(None, Some(wg.clone()), None, Some(tmp.path().to_path_buf()));
+        assert_eq!(result, wg);
+    }
+
+    /// If WG_DIR points at a directory containing graph.jsonl directly,
+    /// treat it as the literal workgraph dir even if its basename is
+    /// unusual. Preserves the existing "WG_DIR is the graph dir" contract
+    /// for users who already rely on it.
+    #[test]
+    fn wg_dir_with_graph_jsonl_at_top_is_treated_literally() {
+        let tmp = TempDir::new().unwrap();
+        let custom = tmp.path().join("custom-graph-dir");
+        std::fs::create_dir_all(&custom).unwrap();
+        std::fs::write(custom.join("graph.jsonl"), "").unwrap();
+        // Even though we add a stray .wg subdir, the top-level graph.jsonl
+        // wins and we use the path as-is.
+        std::fs::create_dir_all(custom.join(".wg")).unwrap();
+        let result = resolve_workgraph_dir(
+            None,
+            Some(custom.clone()),
+            None,
+            Some(tmp.path().to_path_buf()),
+        );
+        assert_eq!(result, custom);
+    }
+
+    /// If WG_DIR points at a directory that is neither named `.wg`/
+    /// `.workgraph` nor contains one (and has no graph.jsonl), use it
+    /// literally — this is "user knows what they're doing" territory.
+    #[test]
+    fn wg_dir_with_no_descent_target_is_literal() {
+        let tmp = TempDir::new().unwrap();
+        let custom = tmp.path().join("brand-new-empty");
+        // Don't create the dir — resolver shouldn't care; downstream
+        // commands will error cleanly when they try to load the graph.
+        let result = resolve_workgraph_dir(
+            None,
+            Some(custom.clone()),
+            None,
+            Some(tmp.path().to_path_buf()),
+        );
+        assert_eq!(result, custom);
     }
 }
 
