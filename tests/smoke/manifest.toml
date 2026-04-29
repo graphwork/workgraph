@@ -317,6 +317,16 @@ description = "Regression for chat-launched-with: launching a chat with --execut
 timeout_seconds = 30
 
 [[scenario]]
+name = "codex_chat_pty_passes_bypass_approvals"
+script = "scenarios/codex_chat_pty_passes_bypass_approvals.sh"
+owners = [
+    "fix-codex-chat",
+    "smoke-gate-is",
+]
+description = "Pins fix-codex-chat: the codex chat agent in the wg TUI MUST be launched with --dangerously-bypass-approvals-and-sandbox. Without it codex prompts the user to approve every shell command (wg status, wg add, etc.) and the chat agent cannot do its job — the user reported 'it cant even see wg'. Drives `wg tui` with a fake codex shim that captures argv, then asserts the captured argv contains the bypass flag. Mirrors the claude path's --dangerously-skip-permissions posture. No real codex CLI / LLM required."
+timeout_seconds = 60
+
+[[scenario]]
 name = "failed_upstream_blocks_downstream"
 script = "scenarios/failed_upstream_blocks_downstream.sh"
 owners = [

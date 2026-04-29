@@ -1116,6 +1116,51 @@ pub fn resolve_chat_pty_executor_and_model(
     (executor, model)
 }
 
+/// Build the argv for the TUI's interactive `codex` PTY chat pane.
+///
+/// The bypass flag (`--dangerously-bypass-approvals-and-sandbox`) is
+/// required: without it, codex prompts the user to approve every shell
+/// command (including `wg status`), so chat agents driven from the wg
+/// TUI cannot inspect the graph or call `wg add`. The user already
+/// authorized the chat agent implicitly by opening the TUI from their
+/// own terminal — same posture as the claude path
+/// (`--dangerously-skip-permissions`).
+///
+/// `prior_session_id` selects the resume strategy:
+/// - `Some(uuid)` → `codex resume <uuid>` (daemon-persisted session)
+/// - `None` + `pty_marker_exists=true` → `codex resume --last`
+/// - `None` + `pty_marker_exists=false` → fresh interactive session
+///
+/// `chat_model` is an optional model override (provider prefix is
+/// stripped — codex expects bare model ids).
+pub fn build_codex_chat_pty_args(
+    prior_session_id: Option<&str>,
+    pty_marker_exists: bool,
+    chat_model: Option<&str>,
+) -> Vec<String> {
+    let mut args: Vec<String> = if let Some(sid) = prior_session_id {
+        vec!["resume".to_string(), sid.to_string()]
+    } else if pty_marker_exists {
+        vec!["resume".to_string(), "--last".to_string()]
+    } else {
+        Vec::new()
+    };
+    // Always bypass approvals + sandbox: the user authorized the chat
+    // agent implicitly by opening the TUI. Without this, codex prompts
+    // the user for every `wg` command the chat agent runs and the
+    // agent cannot do its job. Mirrors the claude path's
+    // `--dangerously-skip-permissions`.
+    args.push("--dangerously-bypass-approvals-and-sandbox".to_string());
+    if let Some(m) = chat_model {
+        let spec = workgraph::config::parse_model_spec(m);
+        if !spec.model_id.is_empty() {
+            args.push("--model".to_string());
+            args.push(spec.model_id);
+        }
+    }
+    args
+}
+
 pub fn filter_models_for_executor(
     all_models: &[(String, String)],
     executor: &str,
@@ -12962,26 +13007,15 @@ impl VizApp {
                         .ok()
                         .map(|s| s.trim().to_string())
                         .filter(|s| !s.is_empty());
-                    let mut args = if let Some(sid) = prior_session_id {
-                        vec!["resume".to_string(), sid]
-                    } else if pty_marker.exists() {
-                        vec!["resume".to_string(), "--last".to_string()]
-                    } else {
+                    let pty_marker_exists = pty_marker.exists();
+                    if prior_session_id.is_none() && !pty_marker_exists {
                         let _ = std::fs::write(&pty_marker, "");
-                        Vec::new()
-                    };
-                    // Honor per-chat model override (e.g. gpt-5 vs
-                    // gpt-5-codex on a per-tab basis). codex accepts
-                    // `--model <id>` as a top-level flag and as a
-                    // subcommand flag for `exec`. Strip the provider
-                    // prefix — codex expects bare model ids.
-                    if let Some(ref m) = chat_model {
-                        let spec = workgraph::config::parse_model_spec(m);
-                        if !spec.model_id.is_empty() {
-                            args.push("--model".to_string());
-                            args.push(spec.model_id);
-                        }
                     }
+                    let args = build_codex_chat_pty_args(
+                        prior_session_id.as_deref(),
+                        pty_marker_exists,
+                        chat_model.as_deref(),
+                    );
                     ("codex".to_string(), args, Some(chat_dir.clone()))
                 }
                 _ => {
@@ -24077,6 +24111,89 @@ mod chat_pty_executor_resolution_tests {
 
         assert_eq!(executor, "claude");
         assert_eq!(model.as_deref(), Some("claude:sonnet"));
+    }
+}
+
+#[cfg(test)]
+mod build_codex_chat_pty_args_tests {
+    use super::build_codex_chat_pty_args;
+
+    /// Regression lock for fix-codex-chat: the codex chat agent in the
+    /// wg TUI MUST always be spawned with
+    /// `--dangerously-bypass-approvals-and-sandbox`. Without it codex
+    /// prompts the user to approve every shell command (`wg status`,
+    /// `wg add`, etc.) and the chat agent cannot do its job. The user
+    /// authorized the chat agent implicitly by opening the TUI from
+    /// their own terminal — same posture as the claude path's
+    /// `--dangerously-skip-permissions`.
+    #[test]
+    fn fresh_session_includes_bypass_flag() {
+        let args = build_codex_chat_pty_args(None, false, None);
+        assert!(
+            args.contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()),
+            "codex chat args MUST include --dangerously-bypass-approvals-and-sandbox; got: {:?}",
+            args
+        );
+    }
+
+    #[test]
+    fn resume_with_session_id_includes_bypass_flag() {
+        let args = build_codex_chat_pty_args(Some("abc-123-uuid"), false, None);
+        assert_eq!(args[0], "resume");
+        assert_eq!(args[1], "abc-123-uuid");
+        assert!(
+            args.contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()),
+            "codex resume <id> args MUST include --dangerously-bypass-approvals-and-sandbox; got: {:?}",
+            args
+        );
+    }
+
+    #[test]
+    fn resume_last_includes_bypass_flag() {
+        let args = build_codex_chat_pty_args(None, true, None);
+        assert_eq!(args[0], "resume");
+        assert_eq!(args[1], "--last");
+        assert!(
+            args.contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()),
+            "codex resume --last args MUST include --dangerously-bypass-approvals-and-sandbox; got: {:?}",
+            args
+        );
+    }
+
+    #[test]
+    fn model_override_strips_provider_prefix() {
+        let args = build_codex_chat_pty_args(None, false, Some("codex:gpt-5"));
+        let model_idx = args
+            .iter()
+            .position(|a| a == "--model")
+            .expect("--model flag missing");
+        assert_eq!(args[model_idx + 1], "gpt-5", "provider prefix must be stripped");
+    }
+
+    /// Symmetry check: claude path passes `--dangerously-skip-permissions`,
+    /// codex path passes `--dangerously-bypass-approvals-and-sandbox`.
+    /// If a future refactor renames the codex flag, this test plus the
+    /// `build_codex_chat_pty_args` doc comment are the breadcrumb that
+    /// flags both halves of the symmetry need updating.
+    #[test]
+    fn codex_bypass_flag_is_current_codex_cli_name() {
+        // codex 0.125+ uses --dangerously-bypass-approvals-and-sandbox
+        // (verified via `codex --help` at fix-codex-chat time).
+        let args = build_codex_chat_pty_args(None, false, None);
+        let bypass_flags: Vec<&String> = args
+            .iter()
+            .filter(|a| a.starts_with("--dangerously"))
+            .collect();
+        assert_eq!(
+            bypass_flags.len(),
+            1,
+            "expected exactly one --dangerously-* flag; got: {:?}",
+            args
+        );
+        assert_eq!(
+            bypass_flags[0], "--dangerously-bypass-approvals-and-sandbox",
+            "if codex CLI renamed the bypass flag, update build_codex_chat_pty_args + this test"
+        );
     }
 }
 
