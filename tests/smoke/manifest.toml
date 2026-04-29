@@ -581,3 +581,12 @@ owners = [
 ]
 description = "Pins the codex chat-tab rendering fix. Codex's interactive CLI sends CPR (ESC [ 6 n), kitty keyboard query (ESC [ ? u) and OSC 10/11 fg/bg queries on startup and BLOCKS waiting for replies — without responses the chat tab shows only 40 bytes of query output (no UI). Re-runs the unit tests for each new query response handler in compute_query_replies, plus a regression test that feeds the actual 40-byte burst captured from codex 0.125.0 at 24x80 and asserts CPR + kitty + Primary DA + OSC 10 replies are all generated."
 timeout_seconds = 120
+
+[[scenario]]
+name = "pty_codex_sync_repaint_no_scrollback_stacking"
+script = "scenarios/pty_codex_sync_repaint_no_scrollback_stacking.sh"
+owners = [
+    "fix-codex-chat-3",
+]
+description = "Pins fix-codex-chat-3: codex chat in wg TUI must (1) render real-time animation frames between user keypresses and (2) NOT stack spinner copies in scrollback as the user scrolls back. Bug 1 = event loop's idle-poll branch never redrew on PTY byte arrivals (refresh interval 1 Hz against codex's 10-20 Hz frames); fix wires per-pane bytes_processed watermark into has_timed_ui_elements. Bug 2 = codex emits each frame as a DEC mode 2026 (BSU/ESU) sync block whose trailing \\r\\n scrolls one row off the top per frame, accumulating in scrollback (vt100 0.16 doesn't implement BSU/ESU); fix intercepts the markers in the reader thread and trims sync-induced scrollback growth via reflow. Runs unit tests for both halves; no live LLM/codex endpoint required (synthesized byte streams matching codex 0.125.0's actual pattern)."
+timeout_seconds = 180

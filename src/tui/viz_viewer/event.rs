@@ -269,6 +269,13 @@ fn run_event_loop_inner(
             let completed = terminal.draw(|frame| render::draw(frame, app))?;
             // Update the shared screen snapshot for IPC dump clients.
             update_shared_screen(completed.buffer, app, shared_screen);
+            // Mark every embedded chat PTY's current bytes_processed as
+            // "rendered" so the next idle-poll tick only redraws when
+            // genuinely new bytes have landed. Without this watermark,
+            // `chat_pty_has_new_bytes()` would return true on every poll
+            // and pin the loop to 60 fps even when the PTY child is
+            // silent.
+            app.update_task_pane_byte_watermarks();
             needs_redraw = false;
         }
 

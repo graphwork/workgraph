@@ -4780,6 +4780,17 @@ pub struct VizApp {
     /// Phase 3 of docs/design/sessions-as-identity-rollout.md.
     pub task_panes: std::collections::HashMap<String, crate::tui::pty_pane::PtyPane>,
 
+    /// Most recent `bytes_processed` count seen per `task_panes` entry,
+    /// captured at the end of each redraw. The event loop's idle-poll
+    /// branch consults `chat_pty_has_new_bytes()` to decide whether to
+    /// redraw — a PTY child emitting bytes between user keypresses
+    /// (e.g. codex's animation frames, claude's streaming output) MUST
+    /// trigger a redraw or the user sees a stalled UI even though the
+    /// reader thread is parsing bytes (fix-codex-chat-3, "real-time
+    /// animations don't render"). One u64 per pane keeps memory flat;
+    /// entries are pruned alongside `task_panes` on pane drop.
+    pub task_pane_last_bytes_seen: std::collections::HashMap<String, u64>,
+
     /// When true, the Chat tab renders PTY output for the active
     /// coordinator's task instead of the file-tailing ChatMessage
     /// widgets. Toggle with Ctrl+T in the Chat tab.
@@ -5232,6 +5243,7 @@ impl VizApp {
             history_depth_override,
             no_history,
             task_panes: HashMap::new(),
+            task_pane_last_bytes_seen: HashMap::new(),
             chat_pty_mode: false,
             chat_pty_observer: false,
             chat_pty_takeover_pending_since: None,
@@ -7278,6 +7290,50 @@ impl VizApp {
             || self.last_refresh.elapsed() >= self.refresh_interval
     }
 
+    /// Whether any embedded chat-PTY pane has emitted bytes since the
+    /// last redraw observed it. Drives the event loop's idle-poll
+    /// branch so animation frames from the PTY child (codex's spinner,
+    /// claude's streaming output) trigger a redraw without needing a
+    /// user keypress. Without this check the loop wakes every 16ms (per
+    /// `next_poll_timeout`'s chat_pty_mode branch) but never redraws,
+    /// and the user sees a stalled UI even though bytes are arriving —
+    /// the regression reported in fix-codex-chat-3 ("real-time
+    /// animations don't render"). After redraw,
+    /// `update_task_pane_byte_watermarks` advances the per-pane
+    /// watermarks so the next call is a no-op until more bytes land.
+    pub fn chat_pty_has_new_bytes(&self) -> bool {
+        if self.task_panes.is_empty() {
+            return false;
+        }
+        for (id, pane) in &self.task_panes {
+            let now = pane.bytes_processed();
+            let last = self
+                .task_pane_last_bytes_seen
+                .get(id)
+                .copied()
+                .unwrap_or(0);
+            if now != last {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Snapshot every pane's `bytes_processed` counter into the
+    /// per-pane watermark map. Called from the event loop right after
+    /// a redraw so subsequent `chat_pty_has_new_bytes()` calls only
+    /// fire when fresh bytes have arrived. Also prunes watermark
+    /// entries for panes that no longer exist (chat closed / abandoned)
+    /// so the map can't accumulate stale ids.
+    pub fn update_task_pane_byte_watermarks(&mut self) {
+        self.task_pane_last_bytes_seen
+            .retain(|id, _| self.task_panes.contains_key(id));
+        for (id, pane) in &self.task_panes {
+            self.task_pane_last_bytes_seen
+                .insert(id.clone(), pane.bytes_processed());
+        }
+    }
+
     /// Whether any time-based UI elements are active and need periodic redraws
     /// (animations, fading notifications, scrollbar timeouts, etc.).
     pub fn has_timed_ui_elements(&self) -> bool {
@@ -7346,6 +7402,12 @@ impl VizApp {
         }
         // Touch echo indicators (fade after ~0.7s)
         if self.has_active_touch_echoes() {
+            return true;
+        }
+        // Embedded chat PTY emitted bytes since last frame — drives
+        // codex / claude / nex animation rendering between user keypresses.
+        // (Cheap: an atomic load per active pane.)
+        if self.chat_pty_has_new_bytes() {
             return true;
         }
         false
@@ -9614,6 +9676,7 @@ impl VizApp {
             history_depth_override: None,
             no_history: false,
             task_panes: HashMap::new(),
+            task_pane_last_bytes_seen: HashMap::new(),
             chat_pty_mode: false,
             chat_pty_observer: false,
             chat_pty_takeover_pending_since: None,
@@ -24558,5 +24621,149 @@ mod chat_pty_deferred_spawn_tests {
             (rows, cols),
             "spawn dims must match the area dims passed by the render path"
         );
+    }
+}
+
+#[cfg(test)]
+mod chat_pty_redraw_trigger_tests {
+    //! Pin the demand-driven redraw signal that drives codex / claude
+    //! animation rendering between user keypresses. Before
+    //! fix-codex-chat-3, the event loop's idle-poll branch only
+    //! redrew on `has_timed_ui_elements()` ∨ `is_refresh_due()`, neither
+    //! of which fires on PTY byte arrivals — so codex's spinner emitted
+    //! frames at 10–20 fps but the TUI rendered at 1 Hz (the global
+    //! refresh interval), producing the user-reported "real-time
+    //! animations don't render" symptom. The fix adds a per-pane
+    //! `bytes_processed` watermark and a fresh-bytes check that the
+    //! event loop consults each idle-poll tick.
+    use super::*;
+    use crate::commands::viz::VizOutput;
+
+    fn empty_app() -> VizApp {
+        let viz = VizOutput {
+            text: String::new(),
+            node_line_map: HashMap::new(),
+            task_order: Vec::new(),
+            forward_edges: HashMap::new(),
+            reverse_edges: HashMap::new(),
+            char_edge_map: HashMap::new(),
+            cycle_members: HashMap::new(),
+            annotation_map: HashMap::new(),
+        };
+        VizApp::from_viz_output_for_test(&viz)
+    }
+
+    /// No panes, no fresh bytes: trivially false.
+    #[test]
+    fn no_panes_means_no_fresh_bytes() {
+        let app = empty_app();
+        assert!(!app.chat_pty_has_new_bytes());
+    }
+
+    /// A freshly spawned pane that has emitted bytes (bash echo runs
+    /// immediately) reports has_new_bytes=true on the FIRST check —
+    /// the watermark is initialized to 0, so any non-zero
+    /// `bytes_processed` counts as "new." This is the cold-start case:
+    /// first chat tab paint must redraw to show whatever the child has
+    /// already emitted.
+    #[test]
+    fn fresh_pane_with_output_reports_new_bytes() {
+        let mut app = empty_app();
+        let pane = crate::tui::pty_pane::PtyPane::spawn(
+            "/bin/sh",
+            &["-c", "printf 'hello\\n'; sleep 5"],
+            &[],
+            10,
+            40,
+        )
+        .expect("spawn /bin/sh -c");
+        app.task_panes.insert(".chat-test".to_string(), pane);
+        // Give the reader thread a moment to drain the bytes.
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        assert!(
+            app.chat_pty_has_new_bytes(),
+            "freshly spawned pane with output must trigger redraw on first check — \
+             the user-reported symptom is exactly that codex emits frames but the \
+             TUI never sees them"
+        );
+        if let Some(p) = app.task_panes.remove(".chat-test") {
+            drop(p);
+        }
+    }
+
+    /// After `update_task_pane_byte_watermarks` snapshots the current
+    /// counters, a follow-up check with NO new bytes returns false.
+    /// This is the steady-state case that keeps the loop from pinning
+    /// to 60 fps when the PTY child is silent.
+    #[test]
+    fn watermark_update_clears_fresh_bytes_signal() {
+        let mut app = empty_app();
+        let pane = crate::tui::pty_pane::PtyPane::spawn(
+            "/bin/sh",
+            &["-c", "printf 'hello\\n'; sleep 5"],
+            &[],
+            10,
+            40,
+        )
+        .expect("spawn /bin/sh -c");
+        app.task_panes.insert(".chat-test".to_string(), pane);
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        assert!(app.chat_pty_has_new_bytes());
+        app.update_task_pane_byte_watermarks();
+        assert!(
+            !app.chat_pty_has_new_bytes(),
+            "watermark update must mark current bytes_processed as 'rendered' — \
+             no further redraws should fire until the child emits more bytes"
+        );
+        if let Some(p) = app.task_panes.remove(".chat-test") {
+            drop(p);
+        }
+    }
+
+    /// Watermark map prunes entries for panes that no longer exist —
+    /// the chat-close path drops the pane from `task_panes`, and the
+    /// stale watermark must follow so it can't false-positive against a
+    /// later pane that happens to reuse the same task id.
+    #[test]
+    fn watermark_update_prunes_dropped_panes() {
+        let mut app = empty_app();
+        // Seed a stale watermark for an id that has no pane.
+        app.task_pane_last_bytes_seen
+            .insert(".chat-orphan".to_string(), 9999);
+        app.update_task_pane_byte_watermarks();
+        assert!(
+            !app
+                .task_pane_last_bytes_seen
+                .contains_key(".chat-orphan"),
+            "stale watermarks for non-existent panes must be pruned each tick \
+             so a future pane reusing the id can't be silently skipped"
+        );
+    }
+
+    /// `has_timed_ui_elements()` MUST return true when fresh PTY bytes
+    /// are pending — that's the wiring the event loop reads. If a
+    /// future refactor unwires this, the regression returns and
+    /// animations stall again.
+    #[test]
+    fn has_timed_ui_elements_observes_fresh_pty_bytes() {
+        let mut app = empty_app();
+        let pane = crate::tui::pty_pane::PtyPane::spawn(
+            "/bin/sh",
+            &["-c", "printf 'hello\\n'; sleep 5"],
+            &[],
+            10,
+            40,
+        )
+        .expect("spawn /bin/sh -c");
+        app.task_panes.insert(".chat-test".to_string(), pane);
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        assert!(
+            app.has_timed_ui_elements(),
+            "has_timed_ui_elements must surface fresh PTY bytes so the event loop's \
+             Timeout branch sets needs_redraw=true and animation frames render"
+        );
+        if let Some(p) = app.task_panes.remove(".chat-test") {
+            drop(p);
+        }
     }
 }

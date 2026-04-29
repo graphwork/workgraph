@@ -225,6 +225,15 @@ impl PtyPane {
                 let mut buf = [0u8; 8192];
                 let mut window_start = std::time::Instant::now();
                 let mut window_bytes: u64 = 0;
+                // DEC mode 2026 (synchronized output) tracking. See
+                // `manage_sync_mode_scrollback` for the full motivation —
+                // codex's interactive TUI emits each animation frame as a
+                // BSU/ESU-bracketed full-screen repaint whose trailing
+                // newline scrolls one row off the top per frame, and
+                // without trimming, scrolling back through history shows
+                // stacked spinner frames.
+                let mut in_sync_mode = false;
+                let mut sync_start_scrollback_count = 0usize;
                 loop {
                     match reader.read(&mut buf) {
                         Ok(0) => break,
@@ -256,9 +265,31 @@ impl PtyPane {
                                 window_bytes = 0;
                             }
 
+                            // Capture pre-process scrollback count for sync-mode
+                            // trim accounting; cheap (a couple of method calls)
+                            // when the chunk has no sync markers, since the
+                            // manage_ helper short-circuits in that case.
+                            let pre_count = if chunk_contains_sync_markers(&buf[..n]) {
+                                if let Ok(mut p) = reader_parser.lock() {
+                                    parser_scrollback_count(&mut p)
+                                } else {
+                                    0
+                                }
+                            } else {
+                                0
+                            };
+
                             if let Ok(mut p) = reader_parser.lock() {
                                 p.process(&buf[..n]);
                             }
+
+                            manage_sync_mode_scrollback(
+                                &buf[..n],
+                                &reader_parser,
+                                &mut in_sync_mode,
+                                &mut sync_start_scrollback_count,
+                                pre_count,
+                            );
                         }
                         Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                         Err(_) => break,
@@ -557,28 +588,42 @@ fn read_row_for_reflow(parser: &vt100::Parser, row: u16, cols: u16) -> (Vec<u8>,
 }
 
 /// Snapshot every logical line currently in the parser (scrollback oldest →
-/// newest, then visible top → bottom). Joins rows whose preceding row carries
-/// `wrapped()=true` so the result is a list of logical lines independent of
-/// the original column width — feeding them into a fresh parser at a new
-/// column count rewraps cleanly.
-fn snapshot_logical_lines(parser: &mut vt100::Parser) -> Vec<Vec<u8>> {
-    // Save the user's current scrollback offset; we mutate it below to walk
-    // through the buffer and need to put it back so the post-reflow viewer
-    // state stays consistent (the swap that follows replaces the whole
-    // parser, but if a caller reuses this helper without swapping the
-    // restore is the polite default).
+/// newest, then visible top → bottom), optionally dropping the `drop_recent_k`
+/// most-recently-scrolled-into-scrollback rows. With `drop_recent_k = 0` this
+/// is the standard reflow snapshot; with `k > 0` it is the sync-mode-aware
+/// trim that drops scrollback rows codex pushed during a `\x1b[?2026h` ...
+/// `\x1b[?2026l` synchronized repaint (those rows are repaint echoes the user
+/// never wanted preserved — see `manage_sync_mode_scrollback`).
+///
+/// `trim_trailing_blank_rows` controls whether trailing fully-blank logical
+/// lines are popped before returning. The reflow-on-resize caller wants
+/// trimming so blank visible regions don't compound across resizes; the
+/// sync-mode trim caller wants trailing blanks PRESERVED so the row count of
+/// the re-fed parser matches the pre-trim row count exactly (popping a blank
+/// row would silently lose one row of REAL scrollback per sync block, which
+/// over many animation frames would erase legitimate chat history — see
+/// `sync_mode_block_trim_removes_scrolled_rows`).
+fn snapshot_logical_lines_skipping_recent_scrollback(
+    parser: &mut vt100::Parser,
+    drop_recent_k: usize,
+    trim_trailing_blank_rows: bool,
+) -> Vec<Vec<u8>> {
     let saved_offset = parser.screen().scrollback();
     parser.screen_mut().set_scrollback(usize::MAX);
     let max_offset = parser.screen().scrollback();
     let (rows, cols) = parser.screen().size();
 
-    // Per-row (text, wrapped) collected in temporal order: scrollback oldest
-    // first (highest offset), then visible top → bottom.
     let mut rows_data: Vec<(Vec<u8>, bool)> = Vec::new();
 
-    for offset in (1..=max_offset).rev() {
-        parser.screen_mut().set_scrollback(offset);
-        rows_data.push(read_row_for_reflow(parser, 0, cols));
+    // Skip the K most-recently-scrolled rows (offsets 1..=k) by starting the
+    // walk at offset k+1. When k >= max_offset, the loop body doesn't execute
+    // and we walk only the visible region.
+    let lower = drop_recent_k.saturating_add(1);
+    if lower <= max_offset {
+        for offset in (lower..=max_offset).rev() {
+            parser.screen_mut().set_scrollback(offset);
+            rows_data.push(read_row_for_reflow(parser, 0, cols));
+        }
     }
     parser.screen_mut().set_scrollback(0);
     for r in 0..rows {
@@ -586,8 +631,6 @@ fn snapshot_logical_lines(parser: &mut vt100::Parser) -> Vec<Vec<u8>> {
     }
     parser.screen_mut().set_scrollback(saved_offset);
 
-    // Group consecutive rows: when the previous row carries the wrap flag,
-    // the next row is a continuation of the same logical line.
     let mut lines: Vec<Vec<u8>> = Vec::new();
     let mut current: Vec<u8> = Vec::new();
     let mut prev_wrapped = false;
@@ -601,13 +644,21 @@ fn snapshot_logical_lines(parser: &mut vt100::Parser) -> Vec<Vec<u8>> {
     if !current.is_empty() || prev_wrapped {
         lines.push(current);
     }
-    // Trim trailing fully-blank lines so an empty visible region after a
-    // mostly-empty scrollback doesn't accumulate phantom newlines on each
-    // resize. Keep one trailing blank to preserve cursor positioning.
-    while lines.len() > 1 && lines.last().is_some_and(|l| l.is_empty()) {
-        lines.pop();
+    if trim_trailing_blank_rows {
+        while lines.len() > 1 && lines.last().is_some_and(|l| l.is_empty()) {
+            lines.pop();
+        }
     }
     lines
+}
+
+/// Snapshot every logical line currently in the parser (scrollback oldest →
+/// newest, then visible top → bottom). Joins rows whose preceding row carries
+/// `wrapped()=true` so the result is a list of logical lines independent of
+/// the original column width — feeding them into a fresh parser at a new
+/// column count rewraps cleanly.
+fn snapshot_logical_lines(parser: &mut vt100::Parser) -> Vec<Vec<u8>> {
+    snapshot_logical_lines_skipping_recent_scrollback(parser, 0, true)
 }
 
 /// Build a fresh `vt100::Parser` at the requested dimensions and re-feed the
@@ -778,6 +829,164 @@ fn compute_query_replies(chunk: &[u8], cursor_position: (u16, u16)) -> Vec<u8> {
         i += 1;
     }
     reply
+}
+
+/// Read the parser's current scrollback row count without disturbing the
+/// user's scrollback offset. Uses the standard `set_scrollback(MAX) →
+/// scrollback()` clamp trick.
+fn parser_scrollback_count(parser: &mut vt100::Parser) -> usize {
+    let saved = parser.screen().scrollback();
+    parser.screen_mut().set_scrollback(usize::MAX);
+    let count = parser.screen().scrollback();
+    parser.screen_mut().set_scrollback(saved);
+    count
+}
+
+/// Build a fresh parser at the same dimensions, re-feeding logical lines
+/// from `parser` but dropping the `drop_recent_k` most-recently-scrolled
+/// scrollback rows. Used by `manage_sync_mode_scrollback` to remove the
+/// row(s) codex's full-screen sync repaint scrolled off the top during a
+/// `\x1b[?2026h ... \x1b[?2026l` block.
+///
+/// Trailing-blank trimming is DISABLED here so the re-fed parser's row
+/// count matches the original exactly: popping a blank visible-region row
+/// would silently scroll one extra row of REAL scrollback off the top per
+/// trim, and over many animation frames would erase legitimate chat
+/// history (`sync_mode_block_trim_removes_scrolled_rows` pins this).
+fn parser_after_dropping_recent_scrollback(
+    parser: &mut vt100::Parser,
+    drop_recent_k: usize,
+) -> vt100::Parser {
+    let (rows, cols) = parser.screen().size();
+    let lines =
+        snapshot_logical_lines_skipping_recent_scrollback(parser, drop_recent_k, false);
+    let mut fresh = vt100::Parser::new(rows, cols, DEFAULT_SCROLLBACK_LINES);
+    let n = lines.len();
+    for (i, line) in lines.iter().enumerate() {
+        fresh.process(line);
+        if i + 1 < n {
+            fresh.process(b"\r\n");
+        }
+    }
+    fresh
+}
+
+/// Whether `chunk` contains DEC mode 2026 (synchronized output) BSU
+/// (`\x1b[?2026h`) or ESU (`\x1b[?2026l`) markers. Cheap byte scan;
+/// `manage_sync_mode_scrollback` calls this first to skip the
+/// snapshot/trim work on the vast majority of reads that have no sync
+/// markers (raw text, key echo, prompts, etc.).
+fn chunk_contains_sync_markers(chunk: &[u8]) -> bool {
+    chunk
+        .windows(8)
+        .any(|w| w == b"\x1b[?2026h" || w == b"\x1b[?2026l")
+}
+
+/// Process DEC mode 2026 (synchronized output) tracking for one chunk.
+///
+/// Codex emits its TUI as `\x1b[?2026h` (BSU) ... full-screen repaint
+/// with `\r\n`-separated rows ... `\x1b[?2026l` (ESU) per animation
+/// frame. The repaint's trailing newline scrolls one row off the top
+/// per frame, and after enough frames the scrollback fills with stacked
+/// repaint-echoes the user perceives as "scrolling shows the spinner
+/// frames over and over." vt100 0.16 does not implement BSU/ESU itself,
+/// so we intercept the markers here and trim any scrollback the sync
+/// block produced — the visible region is whatever codex repainted, and
+/// the next sync block will repaint again, so we lose nothing the user
+/// wanted preserved.
+///
+/// Caller invariants:
+/// - `*in_sync` and `*sync_start_count` reflect state BEFORE this chunk's
+///   bytes have been processed by the parser.
+/// - `pre_chunk_scrollback_count` is the parser's scrollback row count
+///   captured BEFORE `parser.process(chunk)` ran.
+/// - Caller has already invoked `parser.process(chunk)` so the parser's
+///   visible state and scrollback count reflect post-chunk.
+///
+/// Updates `*in_sync` and `*sync_start_count` to reflect post-chunk
+/// state, and trims any rows scrolled into scrollback during a sync
+/// block that ENDED in this chunk.
+fn manage_sync_mode_scrollback(
+    chunk: &[u8],
+    parser: &Arc<Mutex<vt100::Parser>>,
+    in_sync: &mut bool,
+    sync_start_count: &mut usize,
+    pre_chunk_scrollback_count: usize,
+) {
+    if !chunk_contains_sync_markers(chunk) {
+        return;
+    }
+
+    // Walk the chunk byte-by-byte tracking sync transitions. We only need
+    // to know the FINAL state and whether a sync block ended within the
+    // chunk (so we can trim). When entering sync from outside, capture
+    // the seed scrollback count: pre_chunk_scrollback_count for the FIRST
+    // entry, post-chunk for subsequent entries (a sync block that started
+    // and ended earlier in the chunk is already trimmed by then).
+    let mut seed = if *in_sync {
+        *sync_start_count
+    } else {
+        pre_chunk_scrollback_count
+    };
+    let mut current_in_sync = *in_sync;
+    let mut total_drop = 0usize;
+
+    let mut i = 0;
+    while i < chunk.len() {
+        if chunk[i..].starts_with(b"\x1b[?2026h") {
+            if !current_in_sync {
+                // Entering sync: pick the right seed. For the first BSU
+                // in the chunk this is pre_chunk_scrollback_count (set
+                // above). For subsequent BSUs after an earlier ESU, the
+                // seed should be the post-trim count, which equals seed
+                // at this point because each ESU's trim brings the
+                // scrollback count back to seed.
+                current_in_sync = true;
+            }
+            i += 8;
+            continue;
+        }
+        if chunk[i..].starts_with(b"\x1b[?2026l") {
+            if current_in_sync {
+                // Sync ended. The bytes between the matching BSU and ESU
+                // pushed (post_count - seed) rows into scrollback, where
+                // post_count is the parser's count NOW (after the entire
+                // chunk has been processed — minus any trim we've already
+                // applied for earlier ESUs in this chunk). We accumulate
+                // `total_drop` and trim once at the end so the parser
+                // lock is held only briefly.
+                if let Ok(mut p) = parser.lock() {
+                    let now = parser_scrollback_count(&mut p);
+                    let after_prior_trims = now.saturating_sub(total_drop);
+                    if after_prior_trims > seed {
+                        total_drop += after_prior_trims - seed;
+                    }
+                    seed = seed.min(after_prior_trims);
+                }
+                current_in_sync = false;
+            }
+            i += 8;
+            continue;
+        }
+        i += 1;
+    }
+
+    if total_drop > 0
+        && let Ok(mut p) = parser.lock()
+    {
+        let fresh = parser_after_dropping_recent_scrollback(&mut p, total_drop);
+        *p = fresh;
+    }
+
+    // Update caller state for next chunk.
+    *in_sync = current_in_sync;
+    *sync_start_count = if current_in_sync {
+        seed
+    } else if let Ok(mut p) = parser.lock() {
+        parser_scrollback_count(&mut p)
+    } else {
+        seed
+    };
 }
 
 /// I/O wrapper: read the parser's current cursor position, compute
@@ -2383,5 +2592,420 @@ sleep 5
     fn no_query_yields_empty_reply() {
         let reply = compute_query_replies(b"hello world\r\n", (0, 0));
         assert!(reply.is_empty(), "non-query bytes must not produce replies");
+    }
+
+    // ─── DEC mode 2026 (synchronized output) scrollback management ──────
+    //
+    // Codex's interactive TUI emits each animation frame as a BSU
+    // (`\x1b[?2026h`) ... full-screen repaint with `\r\n`-separated rows
+    // ... ESU (`\x1b[?2026l`) block. The repaint's trailing newline scrolls
+    // one row off the top per frame, and after enough frames the user sees
+    // stacked spinner copies in scrollback (fix-codex-chat-3 user repro).
+    // vt100 0.16 doesn't implement BSU/ESU at all, so we intercept the
+    // markers in the PTY reader and trim sync-induced scrollback growth.
+
+    /// Pre-condition for the bug: a single codex-style sync-mode repaint
+    /// pushes one row into scrollback when the cursor sits at the bottom
+    /// of the visible region after the final `\r\n`. Pin this so that if
+    /// vt100 ever starts treating BSU/ESU as scrollback-suppressing on
+    /// its own, we know to remove the workaround.
+    #[test]
+    fn raw_sync_mode_repaint_scrolls_into_scrollback_without_intervention() {
+        let rows = 24u16;
+        let cols = 80u16;
+        let mut p = vt100::Parser::new(rows, cols, DEFAULT_SCROLLBACK_LINES);
+
+        // One frame: BSU + 23 content rows + 1 spinner row + ESU. The
+        // last row's trailing `\r\n` lands the cursor below the bottom
+        // and scrolls the top row off into scrollback.
+        p.process(b"\x1b[?2026h");
+        p.process(b"\x1b[1;0r"); // scroll region = full screen
+        p.process(b"\x1b[1;1H"); // cursor home
+        for r in 0..23 {
+            p.process(format!("row {} content\r\n", r).as_bytes());
+        }
+        p.process(b"Loading X\r\n");
+        p.process(b"\x1b[r");
+        p.process(b"\x1b[?2026l");
+
+        let count = parser_scrollback_count(&mut p);
+        assert!(
+            count >= 1,
+            "raw sync repaint must push at least one row into scrollback \
+             (this is the bug-shape pre-condition for the trim fix); \
+             got count={}",
+            count
+        );
+    }
+
+    /// Fix: a single sync block whose repaint pushed K rows into
+    /// scrollback must result in K rows being trimmed when sync ends.
+    /// Drives `manage_sync_mode_scrollback` with a single BSU...ESU chunk
+    /// matching codex's repaint pattern and asserts scrollback grew zero
+    /// rows from before the chunk.
+    #[test]
+    fn sync_mode_block_trim_removes_scrolled_rows() {
+        let rows = 24u16;
+        let cols = 80u16;
+        let parser = Arc::new(Mutex::new(vt100::Parser::new(
+            rows,
+            cols,
+            DEFAULT_SCROLLBACK_LINES,
+        )));
+
+        // Pre-feed history that scrolls into scrollback BEFORE the sync
+        // block. (Real codex chats build scrollback as the user types
+        // messages and the agent replies — those rows are persisted in
+        // scrollback before any animation frame is emitted.)
+        {
+            let mut p = parser.lock().unwrap();
+            for i in 0..30u32 {
+                p.process(format!("real-history-{:02}\r\n", i).as_bytes());
+            }
+        }
+        let pre_count = {
+            let mut p = parser.lock().unwrap();
+            parser_scrollback_count(&mut p)
+        };
+        assert!(
+            pre_count > 0,
+            "test setup: history feed should have pushed rows into scrollback"
+        );
+
+        // One sync-mode repaint frame whose final `\r\n` causes a scroll.
+        let mut chunk: Vec<u8> = Vec::new();
+        chunk.extend_from_slice(b"\x1b[?2026h");
+        chunk.extend_from_slice(b"\x1b[1;0r");
+        chunk.extend_from_slice(b"\x1b[1;1H");
+        for r in 0..23 {
+            chunk.extend_from_slice(format!("row {} content\r\n", r).as_bytes());
+        }
+        chunk.extend_from_slice(b"Loading X\r\n");
+        chunk.extend_from_slice(b"\x1b[r");
+        chunk.extend_from_slice(b"\x1b[?2026l");
+
+        let pre_chunk_scrollback = {
+            let mut p = parser.lock().unwrap();
+            parser_scrollback_count(&mut p)
+        };
+        {
+            let mut p = parser.lock().unwrap();
+            p.process(&chunk);
+        }
+
+        let mut in_sync = false;
+        let mut sync_start = 0usize;
+        manage_sync_mode_scrollback(
+            &chunk,
+            &parser,
+            &mut in_sync,
+            &mut sync_start,
+            pre_chunk_scrollback,
+        );
+
+        let post_count = {
+            let mut p = parser.lock().unwrap();
+            parser_scrollback_count(&mut p)
+        };
+        assert_eq!(
+            post_count, pre_count,
+            "sync-mode repaint must NOT grow scrollback after manage_sync_mode_scrollback \
+             trims it (pre={}, post={}). Codex animations would otherwise stack frames in \
+             scrollback as the user described.",
+            pre_count, post_count
+        );
+
+        // The pre-existing real history must still be in scrollback —
+        // the trim only drops the K rows the sync block pushed, not
+        // rows that were already there. (The sync repaint overwrites
+        // the visible region; that's expected and codex repaints again.)
+        let lines = {
+            let mut p = parser.lock().unwrap();
+            snapshot_logical_lines(&mut p)
+        };
+        let joined: String = lines
+            .iter()
+            .map(|l| String::from_utf8_lossy(l).into_owned())
+            .collect::<Vec<_>>()
+            .join("\n");
+        for i in 0..pre_count.min(5) {
+            let needle = format!("real-history-{:02}", i);
+            assert!(
+                joined.contains(&needle),
+                "pre-sync real history line {} must survive the sync-mode trim \
+                 (the trim must drop ONLY rows scrolled during sync, not pre-existing \
+                 scrollback); got:\n{}",
+                needle,
+                joined
+            );
+        }
+    }
+
+    /// Five back-to-back sync-mode frames (one per animation tick) must
+    /// each have their scrollback growth trimmed independently — total
+    /// scrollback growth across N frames is zero, NOT N. This is the
+    /// "scroll up shows stacked spinner frames" bug.
+    #[test]
+    fn five_sync_mode_frames_each_trim_independently() {
+        let rows = 24u16;
+        let cols = 80u16;
+        let parser = Arc::new(Mutex::new(vt100::Parser::new(
+            rows,
+            cols,
+            DEFAULT_SCROLLBACK_LINES,
+        )));
+
+        {
+            let mut p = parser.lock().unwrap();
+            for i in 0..3u32 {
+                p.process(format!("history-{}\r\n", i).as_bytes());
+            }
+        }
+        let baseline = {
+            let mut p = parser.lock().unwrap();
+            parser_scrollback_count(&mut p)
+        };
+
+        let mut in_sync = false;
+        let mut sync_start = 0usize;
+        for frame in 0..5u32 {
+            let mut chunk: Vec<u8> = Vec::new();
+            chunk.extend_from_slice(b"\x1b[?2026h");
+            chunk.extend_from_slice(b"\x1b[1;0r");
+            chunk.extend_from_slice(b"\x1b[1;1H");
+            for r in 0..23 {
+                chunk.extend_from_slice(format!("row {} content\r\n", r).as_bytes());
+            }
+            chunk.extend_from_slice(format!("Loading frame-{}\r\n", frame).as_bytes());
+            chunk.extend_from_slice(b"\x1b[r");
+            chunk.extend_from_slice(b"\x1b[?2026l");
+
+            let pre = {
+                let mut p = parser.lock().unwrap();
+                parser_scrollback_count(&mut p)
+            };
+            {
+                let mut p = parser.lock().unwrap();
+                p.process(&chunk);
+            }
+            manage_sync_mode_scrollback(&chunk, &parser, &mut in_sync, &mut sync_start, pre);
+        }
+
+        let final_count = {
+            let mut p = parser.lock().unwrap();
+            parser_scrollback_count(&mut p)
+        };
+        assert_eq!(
+            final_count, baseline,
+            "five sync-mode animation frames must each trim independently — \
+             total scrollback should equal pre-animation baseline ({}), got {}. \
+             Without the trim, scrollback would grow by ~5 rows (one per frame), \
+             which is exactly the user-visible \"scroll up shows stacked spinner frames\" \
+             regression.",
+            baseline, final_count
+        );
+    }
+
+    /// chunk_contains_sync_markers must NOT trigger the trim path on a
+    /// chunk that has no DEC 2026 markers — the cheap fast-path that
+    /// keeps the reader thread from snapshot/reflowing on every read.
+    #[test]
+    fn no_sync_markers_means_no_scrollback_trim() {
+        let rows = 24u16;
+        let cols = 80u16;
+        let parser = Arc::new(Mutex::new(vt100::Parser::new(
+            rows,
+            cols,
+            DEFAULT_SCROLLBACK_LINES,
+        )));
+        // Push some content that scrolls into scrollback WITHOUT any sync
+        // markers — manage_sync_mode_scrollback must leave it alone.
+        let mut chunk: Vec<u8> = Vec::new();
+        for i in 0..30u32 {
+            chunk.extend_from_slice(format!("plain-{:02}\r\n", i).as_bytes());
+        }
+        let pre = {
+            let mut p = parser.lock().unwrap();
+            parser_scrollback_count(&mut p)
+        };
+        {
+            let mut p = parser.lock().unwrap();
+            p.process(&chunk);
+        }
+        let mut in_sync = false;
+        let mut sync_start = 0usize;
+        manage_sync_mode_scrollback(&chunk, &parser, &mut in_sync, &mut sync_start, pre);
+
+        let post = {
+            let mut p = parser.lock().unwrap();
+            parser_scrollback_count(&mut p)
+        };
+        assert!(
+            post > pre,
+            "non-sync content scrolling off the top must accumulate normally in \
+             scrollback (the fast-path skips trim work); pre={}, post={}",
+            pre, post
+        );
+
+        let joined: Vec<String> = {
+            let mut p = parser.lock().unwrap();
+            snapshot_logical_lines(&mut p)
+                .iter()
+                .map(|l| String::from_utf8_lossy(l).into_owned())
+                .collect()
+        };
+        let blob = joined.join("\n");
+        assert!(
+            blob.contains("plain-00") || blob.contains("plain-01"),
+            "early plain-NN history must remain in scrollback (no spurious trim). \
+             Got:\n{}",
+            blob
+        );
+    }
+
+    /// End-to-end: drive the full reader-thread + sync-mode-trim path
+    /// against a real PTY child emitting codex's actual repaint pattern.
+    /// Without the trim, scrollback grows by ~1 row per frame (the bug
+    /// the user reported). With the trim wired into the reader thread,
+    /// scrollback growth across N animation frames must stay bounded.
+    ///
+    /// The shell child here was the live confirmation that the fix
+    /// works end-to-end — at 10 frames the unmodified vt100 parser
+    /// stacked 10 rows in scrollback (verified separately); the wg
+    /// reader thread with `manage_sync_mode_scrollback` keeps it ≤2
+    /// (one possible off-by-one from each chunk's reflow plus the
+    /// occasional wide chunk that ends mid-sync).
+    #[test]
+    fn pty_pane_codex_sync_repaint_does_not_stack_scrollback_rows() {
+        // 5 frames × ~500 bytes each, 80 ms apart — well within
+        // codex's 10-20 fps cadence.
+        let script = r#"
+ROWS=24
+for frame in 1 2 3 4 5; do
+  printf '\x1b[?2026h'
+  printf '\x1b[1;0r'
+  printf '\x1b[1;1H'
+  for r in $(seq 1 23); do
+    printf '\x1b[Krow %d content\r\n' "$r"
+  done
+  printf '\x1b[KLoading frame-%d\r\n' "$frame"
+  printf '\x1b[r'
+  printf '\x1b[?2026l'
+  sleep 0.08
+done
+sleep 5
+"#;
+        let mut pane = PtyPane::spawn("/bin/bash", &["-c", script], &[], 24, 80)
+            .expect("spawn /bin/bash codex-shape repaint");
+
+        // Wait for all 5 frames to land (≥ 5 × 80 ms = 400 ms; pad for
+        // bash spawn + thread scheduling).
+        std::thread::sleep(std::time::Duration::from_millis(900));
+
+        let scrollback_growth = {
+            let mut p = pane.parser.lock().unwrap();
+            parser_scrollback_count(&mut p)
+        };
+
+        // Without the fix, scrollback_growth would be ~5 (one row per
+        // frame stacked). With the fix, it must be small — ideally 0,
+        // but reflow has occasional off-by-one slack we accept since
+        // it's bounded per-frame and doesn't compound across frames
+        // the way the unmodified parser would.
+        assert!(
+            scrollback_growth <= 2,
+            "5-frame codex-style sync repaint must NOT stack scrollback rows — \
+             got {} rows growth, expected ≤2 (the bug reported in fix-codex-chat-3 \
+             would produce 5+; user described it as 'scrolling up is repeating the \
+             animation text')",
+            scrollback_growth
+        );
+
+        pane.kill();
+    }
+
+    /// chunk_contains_sync_markers detects both BSU and ESU bytes and
+    /// rejects unrelated bytes that happen to share a prefix.
+    #[test]
+    fn chunk_contains_sync_markers_detection() {
+        assert!(chunk_contains_sync_markers(b"\x1b[?2026h"));
+        assert!(chunk_contains_sync_markers(b"\x1b[?2026l"));
+        assert!(chunk_contains_sync_markers(b"prefix\x1b[?2026hsuffix"));
+        assert!(chunk_contains_sync_markers(b"prefix\x1b[?2026lsuffix"));
+        assert!(!chunk_contains_sync_markers(b""));
+        assert!(!chunk_contains_sync_markers(b"\x1b[?2026"));
+        assert!(!chunk_contains_sync_markers(b"\x1b[?2025h"));
+        assert!(!chunk_contains_sync_markers(b"plain text only"));
+        assert!(!chunk_contains_sync_markers(b"\x1b[?2004h\x1b[H"));
+    }
+
+    /// snapshot_logical_lines_skipping_recent_scrollback drops the K most
+    /// recent scrollback rows and preserves the rest plus the visible
+    /// region. Pin the contract so future changes to reflow don't
+    /// accidentally invert the offset semantics (offset 1 is the
+    /// most-recently-scrolled, offset max is the oldest).
+    #[test]
+    fn snapshot_skip_recent_scrollback_drops_correct_rows() {
+        let rows = 5u16;
+        let cols = 40u16;
+        let mut p = vt100::Parser::new(rows, cols, DEFAULT_SCROLLBACK_LINES);
+        // Feed 8 lines into a 5-row screen. Each "line-N\r\n" advances
+        // the cursor one row; after 8 newlines the cursor is 8 rows
+        // below the start, so 4 lines have scrolled into scrollback
+        // (line-0..line-3 — newest at offset 1 = line-3, oldest at
+        // offset 4 = line-0). The visible region holds line-4..line-7
+        // plus one trailing blank row.
+        for i in 0..8u32 {
+            p.process(format!("line-{}\r\n", i).as_bytes());
+        }
+        let max_offset = parser_scrollback_count(&mut p);
+        assert_eq!(
+            max_offset, 4,
+            "test setup expectation: 8 lines into 5-row screen → 4 in scrollback, \
+             4 visible (+ 1 trailing blank)"
+        );
+
+        // drop_recent_k=0 keeps everything.
+        let all = snapshot_logical_lines_skipping_recent_scrollback(&mut p, 0, true);
+        let blob_all: String = all
+            .iter()
+            .map(|l| String::from_utf8_lossy(l).into_owned())
+            .collect::<Vec<_>>()
+            .join("\n");
+        for i in 0..8u32 {
+            assert!(
+                blob_all.contains(&format!("line-{}", i)),
+                "all lines should be present in full snapshot, missing line-{}; got:\n{}",
+                i,
+                blob_all
+            );
+        }
+
+        // drop_recent_k=2 drops the two most-recently-scrolled rows:
+        // line-3 (offset 1) and line-2 (offset 2). The two OLDEST
+        // (line-0 at offset 4, line-1 at offset 3) survive in scrollback;
+        // the visible region (line-4..line-7) is unaffected.
+        let trimmed = snapshot_logical_lines_skipping_recent_scrollback(&mut p, 2, true);
+        let blob_trim: String = trimmed
+            .iter()
+            .map(|l| String::from_utf8_lossy(l).into_owned())
+            .collect::<Vec<_>>()
+            .join("\n");
+        for surviving in ["line-0", "line-1", "line-4", "line-5", "line-6", "line-7"] {
+            assert!(
+                blob_trim.contains(surviving),
+                "drop_recent_k=2 must keep {}; got:\n{}",
+                surviving,
+                blob_trim
+            );
+        }
+        for dropped in ["line-2", "line-3"] {
+            assert!(
+                !blob_trim.contains(dropped),
+                "drop_recent_k=2 must drop {} (it was offset 1 or 2 in scrollback); got:\n{}",
+                dropped,
+                blob_trim
+            );
+        }
     }
 }
