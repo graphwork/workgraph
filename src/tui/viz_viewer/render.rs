@@ -3051,8 +3051,13 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         .saturating_sub(search_bar_height);
 
     // Coordinator + user board tab bar — always visible so the user can discover [+]
-    let coordinator_entries = app.active_tab_ids_and_labels();
-    let user_board_entries = app.list_user_board_entries();
+    // Read from the per-tick cache populated in `maybe_refresh()` instead of
+    // re-loading + re-parsing graph.jsonl (2 MB+) on every render frame.
+    // Each redraw of the chat tab previously did this twice, which under
+    // adaptive 50-200 ms polling produced 10-40 graph reloads/sec and
+    // accounted for ~55 % of `wg tui` CPU (see fix-wg-tui).
+    let coordinator_entries = app.cached_chat_tab_entries.clone();
+    let user_board_entries = app.cached_user_board_entries.clone();
     let tab_bar_height: u16 = 1;
 
     {

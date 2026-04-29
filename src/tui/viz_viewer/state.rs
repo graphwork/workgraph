@@ -4889,6 +4889,22 @@ pub struct VizApp {
 
     pub editor_handler: EditorEventHandler,
 
+    // ── Render-path graph caches ──
+    /// Cached `(cid, label)` entries for the chat tab bar — refreshed in
+    /// `maybe_refresh()` whenever the graph reloads. The chat-tab renderer
+    /// reads this instead of calling `active_tab_ids_and_labels()` per frame
+    /// (which would re-parse `graph.jsonl` 10-40 times/sec under animation).
+    pub cached_chat_tab_entries: Vec<(u32, String)>,
+    /// Cached `(task_id, label)` entries for user-board tabs — refreshed in
+    /// `maybe_refresh()` alongside `cached_chat_tab_entries`. Pairs with the
+    /// chat-tab renderer's tab-bar build.
+    pub cached_user_board_entries: Vec<(String, String)>,
+    /// Set of cids known to the most recently loaded graph — used by
+    /// `rebuild_active_tab_entries_from_cache()` to recompute
+    /// `cached_chat_tab_entries` after `active_tabs` mutations (close_tab,
+    /// sync_active_tabs_from_graph) without touching disk.
+    cached_coordinator_id_set: std::collections::HashSet<u32>,
+
     // ── Live refresh ──
     /// Last observed modification time of graph.jsonl.
     last_graph_mtime: Option<SystemTime>,
@@ -5173,6 +5189,9 @@ impl VizApp {
             touch_echoes: Vec::new(),
             has_keyboard_enhancement: false,
             editor_handler: create_editor_handler(),
+            cached_chat_tab_entries: Vec::new(),
+            cached_user_board_entries: Vec::new(),
+            cached_coordinator_id_set: std::collections::HashSet::new(),
             last_graph_mtime: graph_mtime,
             last_refresh: Instant::now(),
             last_refresh_display: chrono::Local::now().format("%H:%M:%S").to_string(),
@@ -5197,6 +5216,7 @@ impl VizApp {
         if let Ok(graph) = load_graph(&graph_path) {
             app.load_viz_from_graph(&graph);
             app.load_stats_from_graph(&graph);
+            app.refresh_chat_tab_caches(&graph);
         } else {
             app.load_viz();
             app.load_stats();
@@ -6813,6 +6833,7 @@ impl VizApp {
                     self.smart_follow_active = self.scroll.is_at_bottom();
                     self.load_viz_from_graph(&graph);
                     self.load_stats_from_graph(&graph);
+                    self.refresh_chat_tab_caches(&graph);
                     self.load_agent_monitor();
                     self.update_agent_streams();
                     if self.right_panel_tab == RightPanelTab::Firehose {
@@ -7049,6 +7070,7 @@ impl VizApp {
                     }
                 }
                 self.load_stats_from_graph(&graph);
+                self.refresh_chat_tab_caches(&graph);
                 self.load_agent_monitor();
                 self.update_agent_streams();
                 // Update firehose with new agent output if Firehose tab is active.
@@ -7120,6 +7142,7 @@ impl VizApp {
                 if let Ok(graph) = load_graph(&graph_path) {
                     self.load_viz_from_graph(&graph);
                     self.load_stats_from_graph(&graph);
+                    self.refresh_chat_tab_caches(&graph);
                 }
             }
         }
@@ -9505,6 +9528,9 @@ impl VizApp {
             touch_echoes: Vec::new(),
             has_keyboard_enhancement: false,
             editor_handler: create_editor_handler(),
+            cached_chat_tab_entries: Vec::new(),
+            cached_user_board_entries: Vec::new(),
+            cached_coordinator_id_set: std::collections::HashSet::new(),
             last_graph_mtime: None,
             last_refresh: Instant::now(),
             last_refresh_display: String::new(),
@@ -9548,6 +9574,7 @@ impl VizApp {
                 self.rerun_search();
             }
             self.load_stats_from_graph(&graph);
+            self.refresh_chat_tab_caches(&graph);
         } else {
             self.load_viz();
             if !self.search_input.is_empty() {
@@ -13334,6 +13361,84 @@ impl VizApp {
             .collect()
     }
 
+    /// Build the `(cid, canonical_chat_task_id)` list directly from a
+    /// pre-loaded graph — no disk I/O. Used by `refresh_chat_tab_caches`
+    /// in the per-tick refresh path (see `maybe_refresh`) so we don't
+    /// re-parse `graph.jsonl` once per render frame.
+    fn list_coordinator_ids_and_labels_from_graph(
+        graph: &workgraph::graph::WorkGraph,
+    ) -> Vec<(u32, String)> {
+        let mut entries: Vec<(u32, String)> = graph
+            .tasks()
+            .filter(|t| t.tags.iter().any(|tag| workgraph::chat_id::is_chat_loop_tag(tag)))
+            .filter(|t| !matches!(t.status, Status::Abandoned))
+            .filter(|t| !t.tags.iter().any(|tag| tag == "archived"))
+            .filter_map(|t| {
+                let cid = workgraph::chat_id::parse_chat_task_id(&t.id)
+                    .or_else(|| (t.id == ".coordinator").then_some(0))?;
+                Some((cid, String::new()))
+            })
+            .collect();
+        entries.sort_by_key(|(id, _)| *id);
+        entries.dedup_by_key(|(id, _)| *id);
+        if entries.is_empty() {
+            entries.push((0, String::new()));
+        }
+        for (cid, label) in entries.iter_mut() {
+            *label = workgraph::chat_id::canonical_chat_task_id(graph, *cid);
+        }
+        entries
+    }
+
+    /// Build the user-board entries list directly from a pre-loaded graph.
+    /// Pairs with `list_coordinator_ids_and_labels_from_graph` for the
+    /// per-tick cache refresh.
+    fn list_user_board_entries_from_graph(
+        graph: &workgraph::graph::WorkGraph,
+    ) -> Vec<(String, String)> {
+        let mut entries: Vec<(String, String)> = graph
+            .tasks()
+            .filter(|t| workgraph::graph::is_user_board(&t.id))
+            .filter(|t| !t.status.is_terminal())
+            .filter(|t| !t.tags.iter().any(|tag| tag == "archived"))
+            .map(|t| {
+                let label = workgraph::graph::user_board_handle(&t.id)
+                    .map(|h| h.to_string())
+                    .unwrap_or_else(|| t.id.clone());
+                (t.id.clone(), label)
+            })
+            .collect();
+        entries.sort_by(|(a, _), (b, _)| a.cmp(b));
+        entries
+    }
+
+    /// Refresh the chat-tab + user-board caches from a pre-loaded graph.
+    /// Called from `maybe_refresh()` whenever the graph reloads. The chat-tab
+    /// renderer (`render::draw_chat_tab`) reads `cached_chat_tab_entries`
+    /// and `cached_user_board_entries` instead of re-loading + re-parsing
+    /// the 2 MB+ `graph.jsonl` on every frame (the original 55 % CPU bug).
+    pub fn refresh_chat_tab_caches(&mut self, graph: &workgraph::graph::WorkGraph) {
+        let coordinator_entries = Self::list_coordinator_ids_and_labels_from_graph(graph);
+        self.cached_coordinator_id_set =
+            coordinator_entries.iter().map(|(id, _)| *id).collect();
+        self.rebuild_active_tab_entries_from_cache();
+        self.cached_user_board_entries = Self::list_user_board_entries_from_graph(graph);
+    }
+
+    /// Recompute `cached_chat_tab_entries` from `active_tabs` ∩
+    /// `cached_coordinator_id_set` — purely in-memory, no disk I/O. Called
+    /// after any mutation of `active_tabs` (`close_tab`,
+    /// `sync_active_tabs_from_graph`) so the cache stays consistent with the
+    /// user-visible tab bar without re-parsing `graph.jsonl`.
+    fn rebuild_active_tab_entries_from_cache(&mut self) {
+        self.cached_chat_tab_entries = self
+            .active_tabs
+            .iter()
+            .filter(|&&id| self.cached_coordinator_id_set.contains(&id))
+            .map(|&id| (id, workgraph::chat_id::format_chat_task_id(id)))
+            .collect();
+    }
+
     /// Count chats that occupy a slot toward `coordinator.max_coordinators`.
     ///
     /// Distinct from `list_coordinator_ids_and_labels().len()`: this filters
@@ -13446,6 +13551,11 @@ impl VizApp {
             let next = self.active_tabs[0];
             self.switch_coordinator(next);
         }
+        // Refresh the per-frame cache: list_coordinator_ids() above already
+        // populated cached_coordinator_id_set indirectly via the cid set
+        // we just computed; replace it and rebuild the tab-bar cache.
+        self.cached_coordinator_id_set = current;
+        self.rebuild_active_tab_entries_from_cache();
     }
 
     /// Close a tab: remove from active_tabs without touching the underlying
@@ -13461,6 +13571,7 @@ impl VizApp {
                 self.active_coordinator_id = 0;
             }
         }
+        self.rebuild_active_tab_entries_from_cache();
     }
 
     /// Get user board entries from the graph.
@@ -22541,6 +22652,91 @@ mod tui_chat_tests {
         assert_ne!(
             chat_color, coord_color,
             "visual styles must differ between .chat-N and .coordinator-N"
+        );
+    }
+
+    /// Regression for `fix-wg-tui` (55 % CPU bug):
+    /// the chat-tab renderer must read the cached chat-tab + user-board
+    /// entries instead of re-loading + re-parsing `graph.jsonl` each frame.
+    /// The cache is populated by `refresh_chat_tab_caches()` from a
+    /// pre-loaded graph in `maybe_refresh()` and stays consistent with
+    /// `active_tab_ids_and_labels()` / `list_user_board_entries()`.
+    #[test]
+    fn refresh_chat_tab_caches_matches_disk_helpers() {
+        let tmp = TempDir::new().unwrap();
+        let (viz, wg_dir) = setup_workgraph_with_coordinators(&tmp, &[0, 1, 2]);
+
+        let mut app = build_test_app(&viz, &wg_dir);
+        app.active_tabs = vec![0, 1, 2];
+
+        let graph_path = wg_dir.join("graph.jsonl");
+        let graph = workgraph::parser::load_graph(&graph_path).unwrap();
+        app.refresh_chat_tab_caches(&graph);
+
+        let from_disk_chat = app.active_tab_ids_and_labels();
+        let from_disk_user = app.list_user_board_entries();
+
+        assert_eq!(
+            app.cached_chat_tab_entries, from_disk_chat,
+            "cached_chat_tab_entries must equal active_tab_ids_and_labels()"
+        );
+        assert_eq!(
+            app.cached_user_board_entries, from_disk_user,
+            "cached_user_board_entries must equal list_user_board_entries()"
+        );
+    }
+
+    /// Closing a tab must immediately update the cache so the renderer
+    /// stops drawing the closed tab — without re-parsing `graph.jsonl`.
+    #[test]
+    fn close_tab_rebuilds_cache_in_memory() {
+        let tmp = TempDir::new().unwrap();
+        let (viz, wg_dir) = setup_workgraph_with_coordinators(&tmp, &[0, 1, 2]);
+
+        let mut app = build_test_app(&viz, &wg_dir);
+        app.active_tabs = vec![0, 1, 2];
+
+        let graph = workgraph::parser::load_graph(&wg_dir.join("graph.jsonl")).unwrap();
+        app.refresh_chat_tab_caches(&graph);
+        assert_eq!(app.cached_chat_tab_entries.len(), 3);
+
+        app.close_tab(1);
+
+        let cids: Vec<u32> = app
+            .cached_chat_tab_entries
+            .iter()
+            .map(|(cid, _)| *cid)
+            .collect();
+        assert_eq!(
+            cids,
+            vec![0, 2],
+            "close_tab(1) must drop cid=1 from the render cache"
+        );
+    }
+
+    /// `sync_active_tabs_from_graph` must seed the cache so newly-discovered
+    /// chats appear in the tab bar on the next frame.
+    #[test]
+    fn sync_active_tabs_seeds_render_cache() {
+        let tmp = TempDir::new().unwrap();
+        let (viz, wg_dir) = setup_workgraph_with_coordinators(&tmp, &[0, 1]);
+
+        let mut app = build_test_app(&viz, &wg_dir);
+        // Start with empty active_tabs — sync should add 0 and 1.
+        app.active_tabs.clear();
+        app.closed_tabs.clear();
+
+        app.sync_active_tabs_from_graph();
+
+        let cids: Vec<u32> = app
+            .cached_chat_tab_entries
+            .iter()
+            .map(|(cid, _)| *cid)
+            .collect();
+        assert_eq!(
+            cids,
+            vec![0, 1],
+            "sync_active_tabs_from_graph must populate cached_chat_tab_entries"
         );
     }
 }
