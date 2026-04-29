@@ -3,7 +3,7 @@ use std::sync::mpsc;
 
 use anyhow::Result;
 use crossterm::event::{
-    self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
+    self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
 };
 use ratatui::DefaultTerminal;
 use ratatui::layout::Position;
@@ -3541,6 +3541,48 @@ fn right_panel_scroll_to_bottom(app: &mut VizApp) {
     }
 }
 
+/// Route a mouse-wheel `ScrollUp` / `ScrollDown` event over the chat tab to
+/// the right scroll target.
+///
+/// Vendor PTY focus mode (chat_pty_forwards_stdin + RightPanel focus +
+/// !observer) → forward as Up/Down arrow keys to the embedded child so
+/// codex/claude/nex can scroll their own chat view (matches what touch
+/// scroll does, since most terminals translate trackpad gestures into
+/// arrow-key sequences forwarded through the PTY). Without this, mouse
+/// wheel was a no-op for users on terminals that send mouse events on
+/// wheel but key events on touch — fix-mouse-wheel.
+///
+/// Otherwise (observer mode, or chat-PTY rendered but stdin-detached) →
+/// navigate the wg vt100 pane's own scrollback so the user can review
+/// rendered output.
+fn forward_chat_wheel(app: &mut VizApp, kind: MouseEventKind) {
+    let task_id = workgraph::chat_id::format_chat_task_id(app.active_coordinator_id);
+    let Some(pane) = app.task_panes.get_mut(&task_id) else {
+        return;
+    };
+    let vendor_pty_active = app.chat_pty_forwards_stdin
+        && app.focused_panel == FocusedPanel::RightPanel
+        && !app.chat_pty_observer;
+    if vendor_pty_active {
+        let key = match kind {
+            MouseEventKind::ScrollUp => KeyCode::Up,
+            MouseEventKind::ScrollDown => KeyCode::Down,
+            _ => return,
+        };
+        // Three notches per wheel "tick" matches the existing 3-line
+        // scroll_up/down behavior the vt100-fallback path uses.
+        for _ in 0..3 {
+            let _ = pane.send_key(KeyEvent::new(key, KeyModifiers::empty()));
+        }
+    } else {
+        match kind {
+            MouseEventKind::ScrollUp => pane.scroll_up(3),
+            MouseEventKind::ScrollDown => pane.scroll_down(3),
+            _ => {}
+        }
+    }
+}
+
 fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
     use super::state::ScrollbarDragTarget;
 
@@ -3644,10 +3686,7 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                 && app.chat_pty_mode
                 && app.right_panel_tab == RightPanelTab::Chat
             {
-                let task_id = workgraph::chat_id::format_chat_task_id(app.active_coordinator_id);
-                if let Some(pane) = app.task_panes.get_mut(&task_id) {
-                    pane.scroll_up(3);
-                }
+                forward_chat_wheel(app, MouseEventKind::ScrollUp);
             } else if in_graph && app.scroll_axis_swapped {
                 app.record_graph_hscroll_activity();
                 app.scroll.scroll_left(3);
@@ -3680,10 +3719,7 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                 && app.chat_pty_mode
                 && app.right_panel_tab == RightPanelTab::Chat
             {
-                let task_id = workgraph::chat_id::format_chat_task_id(app.active_coordinator_id);
-                if let Some(pane) = app.task_panes.get_mut(&task_id) {
-                    pane.scroll_down(3);
-                }
+                forward_chat_wheel(app, MouseEventKind::ScrollDown);
             } else if in_graph && app.scroll_axis_swapped {
                 app.record_graph_hscroll_activity();
                 app.scroll.scroll_right(3);
@@ -8510,6 +8546,7 @@ mod chat_tab_navigation_tests {
     use super::*;
     use crate::commands::viz::LayoutMode as VizLayoutMode;
     use crate::commands::viz::ascii::generate_ascii;
+    use ratatui::layout::Rect;
     use std::collections::{HashMap, HashSet};
     use workgraph::graph::{Node, Status, WorkGraph};
     use workgraph::parser::save_graph;
@@ -8996,6 +9033,142 @@ mod chat_tab_navigation_tests {
             app.focused_panel,
             FocusedPanel::RightPanel,
             "Ctrl+T from command mode must return focus to chat PTY"
+        );
+    }
+
+    /// Repro for fix-mouse-wheel: in the chat tab, mouse-wheel
+    /// `ScrollUp`/`ScrollDown` over the chat content area must produce
+    /// a visible scroll effect. The user reported that touch scroll
+    /// worked but mouse wheel did nothing in the codex chat tab — touch
+    /// scroll forwards arrow keys through the PTY and codex scrolls its
+    /// own view, while wheel previously only nudged the wg vt100 buffer
+    /// (which is mostly empty for codex thanks to `fix-codex-chat-3`'s
+    /// sync-mode trim). The fix: in vendor-PTY focus mode, forward
+    /// wheel as Up/Down arrow keys so the embedded child scrolls.
+    ///
+    /// We distinguish the forward-keys path from the navigate-vt100
+    /// path by relying on `send_key`'s side-effect of resetting the
+    /// pane's scrollback to 0 (auto_follow = true). If the wheel
+    /// handler called `pane.scroll_up` instead of `pane.send_key`,
+    /// the manually-set scrollback would still be > 0.
+    #[test]
+    fn mouse_wheel_in_vendor_pty_mode_forwards_arrow_keys() {
+        let (mut app, _tmp) = build_app_with_chats(&[0]);
+        app.right_panel_tab = RightPanelTab::Chat;
+        app.focused_panel = FocusedPanel::RightPanel;
+        app.chat_pty_mode = true;
+        app.chat_pty_forwards_stdin = true;
+        app.chat_pty_observer = false;
+        app.mouse_enabled = true;
+
+        let task_id = workgraph::chat_id::format_chat_task_id(app.active_coordinator_id);
+        let Ok(mut pane) = crate::tui::pty_pane::PtyPane::spawn_in(
+            "/bin/sh",
+            &["-c", "for i in $(seq 1 60); do echo line $i; done; sleep 60"],
+            &[],
+            None,
+            24,
+            80,
+        ) else {
+            return;
+        };
+        for _ in 0..50 {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            if pane.bytes_processed() > 200 {
+                break;
+            }
+        }
+        // Manually scroll the pane back so we can detect whether the
+        // wheel handler routed to scroll_up (no change) or to send_key
+        // (resets scrollback to 0).
+        pane.scroll_up(5);
+        assert!(
+            pane.is_scrolled_back(),
+            "pre-condition: pane was scrolled back via direct scroll_up"
+        );
+        app.task_panes.insert(task_id.clone(), pane);
+
+        app.last_tab_bar_area = Rect {
+            x: 60,
+            y: 1,
+            width: 60,
+            height: 1,
+        };
+        app.last_right_content_area = Rect {
+            x: 60,
+            y: 2,
+            width: 60,
+            height: 24,
+        };
+
+        handle_mouse(&mut app, MouseEventKind::ScrollUp, 12, 80);
+        // Wheel events in vendor-PTY mode forward Up keys to the child.
+        // `send_key` resets the pane's scrollback to 0 (auto_follow), so
+        // the previously-scrolled-back state is gone. If the handler
+        // had instead called `pane.scroll_up`, the scrollback would
+        // have grown — and `is_scrolled_back()` would still be true.
+        assert!(
+            !app.task_panes.get_mut(&task_id).unwrap().is_scrolled_back(),
+            "ScrollUp in vendor-PTY mode must forward keys (resets scrollback to 0), \
+             not navigate vt100 scrollback (regression: fix-mouse-wheel)."
+        );
+    }
+
+    /// Counterpart to the vendor-PTY case: when chat is rendered in
+    /// observer mode (no stdin forwarding), the wheel must still produce
+    /// a useful scroll — namely, navigate the vt100 pane's scrollback
+    /// so the user can review rendered output. This guards the
+    /// fall-through branch in `forward_chat_wheel`.
+    #[test]
+    fn mouse_wheel_in_chat_observer_mode_scrolls_vt100_pane() {
+        let (mut app, _tmp) = build_app_with_chats(&[0]);
+        app.right_panel_tab = RightPanelTab::Chat;
+        app.focused_panel = FocusedPanel::RightPanel;
+        app.chat_pty_mode = true;
+        app.chat_pty_forwards_stdin = false; // observer mode: no stdin forwarding
+        app.chat_pty_observer = true;
+        app.mouse_enabled = true;
+
+        let task_id = workgraph::chat_id::format_chat_task_id(app.active_coordinator_id);
+        let Ok(mut pane) = crate::tui::pty_pane::PtyPane::spawn_in(
+            "/bin/sh",
+            &["-c", "for i in $(seq 1 60); do echo line $i; done; sleep 60"],
+            &[],
+            None,
+            24,
+            80,
+        ) else {
+            return;
+        };
+        for _ in 0..50 {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            if pane.bytes_processed() > 200 {
+                break;
+            }
+        }
+        app.task_panes.insert(task_id.clone(), pane);
+
+        app.last_tab_bar_area = Rect {
+            x: 60,
+            y: 1,
+            width: 60,
+            height: 1,
+        };
+        app.last_right_content_area = Rect {
+            x: 60,
+            y: 2,
+            width: 60,
+            height: 24,
+        };
+
+        assert!(
+            !app.task_panes.get_mut(&task_id).unwrap().is_scrolled_back(),
+            "pre-condition: pane should be at the live tail"
+        );
+        handle_mouse(&mut app, MouseEventKind::ScrollUp, 12, 80);
+        assert!(
+            app.task_panes.get_mut(&task_id).unwrap().is_scrolled_back(),
+            "ScrollUp in observer mode must scroll the vt100 pane back"
         );
     }
 
