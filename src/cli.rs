@@ -2139,6 +2139,9 @@ pub enum Commands {
     /// Print a concise cheat sheet for agent onboarding
     Quickstart,
 
+    /// Print the universal agent / chat-agent role contract bundled with this binary
+    AgentGuide,
+
     /// Quick one-screen status overview
     Status {
         /// Include dot-prefixed system tasks in counts (hidden by default)
@@ -5093,6 +5096,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::TuiDump { .. } => "tui-dump",
         Commands::Setup { .. } => "setup",
         Commands::Quickstart => "quickstart",
+        Commands::AgentGuide => "agent-guide",
         Commands::Status { .. } => "status",
         Commands::Stats => "stats",
         Commands::Metrics { .. } => "metrics",

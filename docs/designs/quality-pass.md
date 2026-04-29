@@ -1,5 +1,11 @@
 # Design: Post-Triage Quality Pass
 
+> **Contributor doc — not required to USE workgraph.** The behavior described
+> here is implemented. The authoritative description of when chat agents
+> insert a quality-pass task lives in `wg agent-guide` (bundled with the `wg`
+> binary). This document explains the rationale and design choices for
+> people hacking on workgraph itself.
+
 ## Overview
 
 The quality pass is a regular workgraph task that reviews and adjusts task metadata

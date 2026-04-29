@@ -1,5 +1,12 @@
 # Phantom Edge Analysis
 
+> **Contributor doc — not required to USE workgraph.** This is a research
+> snapshot of how `wg add` validates `--after` blockers. The user-facing
+> rules for chat agents creating tasks (always use `--after`, validate
+> dependencies exist) are summarized in `wg agent-guide` (bundled with the
+> `wg` binary). Read this doc only if you are working on the validation
+> code itself.
+
 Research task: `research-phantom-edge`
 
 ## 1. Current Validation in `wg add`

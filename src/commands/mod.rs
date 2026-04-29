@@ -12,6 +12,7 @@ pub mod agency_scan;
 pub mod agency_stats;
 pub mod agent;
 pub mod agent_crud;
+pub mod agent_guide;
 pub mod agents;
 pub mod aging;
 pub mod analyze;

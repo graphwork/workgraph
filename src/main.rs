@@ -3254,6 +3254,7 @@ fn main() -> Result<()> {
             commands::setup::run_with_args(&args)
         }
         Commands::Quickstart => commands::quickstart::run(cli.json),
+        Commands::AgentGuide => commands::agent_guide::run(),
         Commands::Status { all } => commands::status::run(&workgraph_dir, cli.json, all),
         Commands::Stats => commands::stats::run(&workgraph_dir, cli.json),
         Commands::Metrics { json } => commands::metrics::run(&workgraph_dir, json),
