@@ -488,8 +488,9 @@ name = "secret_keyring_round_trip"
 script = "scenarios/secret_keyring_round_trip.sh"
 owners = [
     "implement-wg-secret",
+    "fix-wg-secret",
 ]
-description = "Keyring backend round-trip: set / get / list / rm / check. Verifies the secure file keystore at ~/.wg/keystore/ works end-to-end and list never reveals values."
+description = "Keyring backend round-trip: set / get / list / rm / check. Pins the fix-wg-secret regressions: --from-stdin reads piped input, --yes makes rm non-interactive, list never reveals values, and `wg secret backend show` no longer claims the keyring backend is itself a file at ~/.wg/keystore (the misnomer)."
 timeout_seconds = 30
 
 [[scenario]]
@@ -497,8 +498,9 @@ name = "secret_plaintext_round_trip"
 script = "scenarios/secret_plaintext_round_trip.sh"
 owners = [
     "implement-wg-secret",
+    "fix-wg-secret",
 ]
-description = "Plaintext backend round-trip with allow_plaintext=true: set / get / list / rm. Verifies file is created with 0600 perms at ~/.wg/secrets/."
+description = "Plaintext backend round-trip with allow_plaintext=true: set / get / list / rm via --from-stdin and --yes. Verifies file is created with 0600 perms at ~/.wg/secrets/."
 timeout_seconds = 30
 
 [[scenario]]
@@ -506,6 +508,25 @@ name = "secret_api_key_ref_resolve"
 script = "scenarios/secret_api_key_ref_resolve.sh"
 owners = [
     "implement-wg-secret",
+    "fix-wg-secret",
 ]
-description = "api_key_ref resolution in endpoint config: store a secret, configure endpoint with api_key_ref = 'keyring:<name>', verify wg endpoints list shows key present (✓)."
+description = "api_key_ref resolution in endpoint config: store a secret via --from-stdin, configure endpoint with api_key_ref = 'keyring:<name>', verify wg endpoints list shows key present (✓)."
 timeout_seconds = 60
+
+[[scenario]]
+name = "secret_keystore_explicit"
+script = "scenarios/secret_keystore_explicit.sh"
+owners = [
+    "fix-wg-secret",
+]
+description = "Explicit `keystore` backend round-trip: --backend keystore + --from-stdin lands at ~/.wg/keystore/<name> with 0600 perms; `keystore:<name>` URI resolves; list reports it under the new `keystore:` prefix (not the legacy `keyring:` misnomer); --yes deletes. Pins the fix-wg-secret naming-honesty contract."
+timeout_seconds = 30
+
+[[scenario]]
+name = "secret_os_keyring_when_available"
+script = "scenarios/secret_os_keyring_when_available.sh"
+owners = [
+    "fix-wg-secret",
+]
+description = "OS-native keyring round-trip when the platform has one (macOS Keychain or Linux secret-service). On headless / unsupported environments, loud-SKIPs (exit 77) so the gate doesn't block CI. When reachable, verifies `wg secret set --from-stdin` actually lands in OS storage (looked up via `security find-generic-password` / `secret-tool lookup`), get --reveal round-trips, backend show reports OS keyring reachable, and rm --yes removes from OS storage."
+timeout_seconds = 30

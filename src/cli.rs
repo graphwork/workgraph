@@ -2923,17 +2923,23 @@ pub enum ModelCommands {
 pub enum SecretCommands {
     /// Store a secret (API key) in the credential store.
     ///
-    /// Prompts for the value interactively (echo off) unless --value is given.
-    /// Use --value only for scripting; it may appear in shell history.
+    /// Default: prompts interactively (echo off). Use --from-stdin in scripts
+    /// to read one line from stdin (no prompt). --value still works but the
+    /// value may appear in shell history.
     Set {
         /// Secret name (e.g., openrouter, anthropic)
         name: String,
 
-        /// Secret value (omit to be prompted interactively with echo off)
+        /// Secret value (visible in argv / shell history — prefer --from-stdin)
         #[arg(long)]
         value: Option<String>,
 
-        /// Backend to use: keyring (default) or plaintext
+        /// Read the secret value from stdin (one line). Mutually exclusive
+        /// with --value. Use this for scripted setup and CI provisioning.
+        #[arg(long)]
+        from_stdin: bool,
+
+        /// Backend to use: keyring (default), keystore, or plaintext
         #[arg(long)]
         backend: Option<String>,
     },
@@ -2950,7 +2956,7 @@ pub enum SecretCommands {
         #[arg(long)]
         reveal: bool,
 
-        /// Backend to use: keyring (default) or plaintext
+        /// Backend to use: keyring (default), keystore, or plaintext
         #[arg(long)]
         backend: Option<String>,
     },
@@ -2963,9 +2969,14 @@ pub enum SecretCommands {
         /// Secret name
         name: String,
 
-        /// Backend to use: keyring (default) or plaintext
+        /// Backend to use: keyring (default), keystore, or plaintext
         #[arg(long)]
         backend: Option<String>,
+
+        /// Skip confirmation prompt. Required when stdin is not a terminal
+        /// (CI / scripts).
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
 
     /// Check whether a secret ref is reachable (for pre-flight validation).
@@ -2988,7 +2999,7 @@ pub enum SecretBackendCommands {
 
     /// Set the default backend for new `wg secret set` calls.
     Set {
-        /// Backend name: keyring or plaintext
+        /// Backend name: keyring, keystore, or plaintext
         backend: String,
     },
 }

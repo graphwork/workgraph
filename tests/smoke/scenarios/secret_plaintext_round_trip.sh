@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# Smoke: plaintext backend round-trip (set / get / list / rm).
+# Smoke: plaintext backend round-trip (set / get / list / rm) using --from-stdin.
 # Requires allow_plaintext = true in the test config.
-# owner: implement-wg-secret
+# owner: implement-wg-secret, fix-wg-secret
 #
 # exit 0  → PASS
 # exit 77 → loud SKIP
 # any other non-zero → FAIL
 set -euo pipefail
 . "$(dirname "$0")/_helpers.sh"
+require_wg
 
 # We need a temp HOME with allow_plaintext enabled
 SMOKE_HOME=$(mktemp -d)
@@ -24,21 +25,15 @@ TOML
 SECRET_NAME="smoke-plain-$$"
 SECRET_VALUE="sk-plain-test-${RANDOM}"
 
-cleanup_secret() {
-    HOME="$SMOKE_HOME" wg secret rm "$SECRET_NAME" --backend plaintext 2>/dev/null || true
-}
-add_cleanup_hook cleanup_secret
-
-# ── set ──────────────────────────────────────────────────────────────────────
-HOME="$SMOKE_HOME" wg secret set "$SECRET_NAME" --backend plaintext --value "$SECRET_VALUE" 2>&1 \
+# ── set via --from-stdin (the regression this task pins) ─────────────────────
+echo "$SECRET_VALUE" | wg secret set "$SECRET_NAME" --backend plaintext --from-stdin 2>&1 \
     | grep -q "stored in plaintext backend" \
-    || { echo "FAIL: wg secret set plaintext did not report success"; exit 1; }
+    || { echo "FAIL: wg secret set plaintext --from-stdin did not report success"; exit 1; }
 
 # Verify file was created with 0600 perms
 SECRET_FILE="$SMOKE_HOME/.wg/secrets/$SECRET_NAME"
 if [ -f "$SECRET_FILE" ]; then
     PERMS=$(stat -c "%a" "$SECRET_FILE" 2>/dev/null || stat -f "%p" "$SECRET_FILE" 2>/dev/null | tail -c 4)
-    # Check it's 0600 (or 100600 on some systems)
     echo "$PERMS" | grep -qE "600$" \
         || { echo "WARN: file perms are $PERMS (expected 600)"; }
 else
@@ -46,22 +41,22 @@ else
 fi
 
 # ── get (redacted) ───────────────────────────────────────────────────────────
-HOME="$SMOKE_HOME" wg secret get "$SECRET_NAME" --backend plaintext 2>&1 | grep -q "exists:" \
+wg secret get "$SECRET_NAME" --backend plaintext 2>&1 | grep -q "exists:" \
     || { echo "FAIL: wg secret get plaintext did not show key exists"; exit 1; }
 
 # get --reveal
-REVEALED=$(HOME="$SMOKE_HOME" wg secret get "$SECRET_NAME" --backend plaintext --reveal 2>/dev/null)
+REVEALED=$(wg secret get "$SECRET_NAME" --backend plaintext --reveal 2>/dev/null)
 [ "$REVEALED" = "$SECRET_VALUE" ] \
     || { echo "FAIL: --reveal returned '$REVEALED', expected '$SECRET_VALUE'"; exit 1; }
 
 # ── list ─────────────────────────────────────────────────────────────────────
-HOME="$SMOKE_HOME" wg secret list 2>&1 | grep -q "plain:${SECRET_NAME}" \
+wg secret list 2>&1 | grep -q "plain:${SECRET_NAME}" \
     || { echo "FAIL: wg secret list did not include plain secret"; exit 1; }
 
-# ── rm ───────────────────────────────────────────────────────────────────────
-HOME="$SMOKE_HOME" wg secret rm "$SECRET_NAME" --backend plaintext 2>&1 \
+# ── rm --yes (non-interactive) ───────────────────────────────────────────────
+wg secret rm "$SECRET_NAME" --backend plaintext --yes 2>&1 \
     | grep -q "deleted from plaintext backend" \
-    || { echo "FAIL: wg secret rm plaintext did not report success"; exit 1; }
+    || { echo "FAIL: wg secret rm plaintext --yes did not report success"; exit 1; }
 
 # File should be gone
 [ ! -f "$SECRET_FILE" ] \

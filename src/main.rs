@@ -3604,12 +3604,13 @@ fn main() -> Result<()> {
             commands::openrouter::run(&workgraph_dir, &command, cli.json)
         }
         Commands::Secret { command } => match command {
-            cli::SecretCommands::Set { name, value, backend } => {
+            cli::SecretCommands::Set { name, value, from_stdin, backend } => {
                 commands::secret_cmd::run_set(
                     &workgraph_dir,
                     &name,
                     value.as_deref(),
                     backend.as_deref(),
+                    from_stdin,
                 )
             }
             cli::SecretCommands::Get { name, reveal, backend } => {
@@ -3623,8 +3624,8 @@ fn main() -> Result<()> {
             cli::SecretCommands::List => {
                 commands::secret_cmd::run_list(&workgraph_dir, cli.json)
             }
-            cli::SecretCommands::Rm { name, backend } => {
-                commands::secret_cmd::run_rm(&workgraph_dir, &name, backend.as_deref())
+            cli::SecretCommands::Rm { name, backend, yes } => {
+                commands::secret_cmd::run_rm(&workgraph_dir, &name, backend.as_deref(), yes)
             }
             cli::SecretCommands::Check { api_key_ref } => {
                 commands::secret_cmd::run_check(&workgraph_dir, &api_key_ref)

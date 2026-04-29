@@ -1,11 +1,13 @@
 //! `wg secret` — manage API key credentials.
 
 use anyhow::{Result, bail};
+use std::io::{IsTerminal, Read};
 use std::path::Path;
 
 use workgraph::config::Config;
-use workgraph::secret::{Backend, SecretsConfig, backend_status, check_ref_reachable, delete,
-                        get, list, set};
+use workgraph::secret::{
+    Backend, SecretsConfig, backend_status, check_ref_reachable, delete, get, list, set,
+};
 
 // ── set ───────────────────────────────────────────────────────────────────────
 
@@ -14,6 +16,7 @@ pub fn run_set(
     name: &str,
     value: Option<&str>,
     backend_str: Option<&str>,
+    from_stdin: bool,
 ) -> Result<()> {
     let cfg = SecretsConfig::load_global();
     let backend: Backend = if let Some(b) = backend_str {
@@ -22,16 +25,33 @@ pub fn run_set(
         cfg.default_backend.clone()
     };
 
-    let secret_value = match value {
-        Some(v) => {
-            eprintln!(
-                "Warning: providing secrets via --value flag may expose them in shell history. \
-                 Prefer interactive prompt."
-            );
-            v.to_string()
-        }
-        None => {
-            read_password()?
+    if from_stdin && value.is_some() {
+        bail!("--from-stdin and --value are mutually exclusive");
+    }
+
+    let secret_value = if from_stdin {
+        read_stdin_line()?
+    } else {
+        match value {
+            Some(v) => {
+                eprintln!(
+                    "Warning: providing secrets via --value flag may expose them in shell history. \
+                     Prefer --from-stdin for scripts or interactive prompt for terminals."
+                );
+                v.to_string()
+            }
+            None => {
+                // If stdin is not a TTY (e.g. piped), fail with a helpful
+                // error pointing at --from-stdin instead of silently
+                // hanging on an interactive prompt.
+                if !std::io::stdin().is_terminal() {
+                    bail!(
+                        "stdin is not a terminal; pass --from-stdin to read the value \
+                         from stdin (one line), or pass --value <value>"
+                    );
+                }
+                read_password()?
+            }
         }
     };
 
@@ -45,13 +65,32 @@ pub fn run_set(
 }
 
 fn read_password() -> Result<String> {
-    // Use dialoguer for echo-off password input (already in project deps)
     use dialoguer::Password;
     let value = Password::new()
         .with_prompt("")
         .interact()
         .unwrap_or_default();
     Ok(value)
+}
+
+/// Read a single line of secret material from stdin. Trailing newline is
+/// stripped. Empty input is a hard error (caught by the caller). Treats stdin
+/// as already-trusted: never echoes; allows arbitrary printable content.
+fn read_stdin_line() -> Result<String> {
+    let mut buf = String::new();
+    std::io::stdin()
+        .read_to_string(&mut buf)
+        .map_err(|e| anyhow::anyhow!("failed to read secret value from stdin: {}", e))?;
+    // Strip a trailing newline (single \n or \r\n) — the typical
+    // `echo "v" | wg secret set foo --from-stdin` shape — but preserve
+    // internal whitespace in case the secret legitimately contains it.
+    if buf.ends_with('\n') {
+        buf.pop();
+        if buf.ends_with('\r') {
+            buf.pop();
+        }
+    }
+    Ok(buf)
 }
 
 // ── get ───────────────────────────────────────────────────────────────────────
@@ -75,13 +114,15 @@ pub fn run_get(
                 eprintln!("Warning: displaying secret value.");
                 println!("{}", value);
             } else {
-                // Show redacted form: first 4 chars + ****
                 let masked = if value.len() > 8 {
-                    format!("{}****...{}", &value[..4], &value[value.len()-4..])
+                    format!("{}****...{}", &value[..4], &value[value.len() - 4..])
                 } else {
                     "****".to_string()
                 };
-                println!("Secret '{}' exists: {} (use --reveal to show full value)", name, masked);
+                println!(
+                    "Secret '{}' exists: {} (use --reveal to show full value)",
+                    name, masked
+                );
             }
         }
         None => {
@@ -121,6 +162,7 @@ pub fn run_rm(
     _workgraph_dir: &Path,
     name: &str,
     backend_str: Option<&str>,
+    yes: bool,
 ) -> Result<()> {
     let cfg = SecretsConfig::load_global();
     let backend: Backend = if let Some(b) = backend_str {
@@ -128,6 +170,31 @@ pub fn run_rm(
     } else {
         cfg.default_backend.clone()
     };
+
+    if !yes {
+        // Refuse to prompt for confirmation when stdin is not a TTY (CI /
+        // pipes). Otherwise this hangs forever or auto-decides quietly.
+        if !std::io::stdin().is_terminal() {
+            bail!(
+                "Refusing to delete '{}' without --yes (stdin is not a terminal). \
+                 Re-run with --yes to confirm.",
+                name
+            );
+        }
+        use dialoguer::Confirm;
+        let confirmed = Confirm::new()
+            .with_prompt(format!(
+                "Delete secret '{}' from {} backend?",
+                name, backend
+            ))
+            .default(false)
+            .interact()
+            .unwrap_or(false);
+        if !confirmed {
+            println!("Aborted.");
+            return Ok(());
+        }
+    }
 
     if delete(name, &backend, &cfg)? {
         println!("Secret '{}' deleted from {} backend.", name, backend);
@@ -146,7 +213,6 @@ pub fn run_backend_show(_workgraph_dir: &Path) -> Result<()> {
 }
 
 pub fn run_backend_set(_workgraph_dir: &Path, backend_str: &str) -> Result<()> {
-    // Update the global config's default_backend
     let mut config = Config::load_global()?.unwrap_or_default();
     let backend: Backend = backend_str.parse()?;
 
@@ -174,6 +240,8 @@ pub fn run_check(_workgraph_dir: &Path, api_key_ref: &str) -> Result<()> {
             println!("Secret ref '{}' is NOT reachable (not found).", api_key_ref);
             if let Some(name) = api_key_ref.strip_prefix("keyring:") {
                 println!("Run: wg secret set {}", name);
+            } else if let Some(name) = api_key_ref.strip_prefix("keystore:") {
+                println!("Run: wg secret set {} --backend keystore", name);
             } else if let Some(name) = api_key_ref.strip_prefix("plain:") {
                 println!("Run: wg secret set {} --backend plaintext", name);
             }
@@ -240,7 +308,6 @@ fn migrate_endpoints_in_config(
 
     for ep in &mut config.llm_endpoints.endpoints {
         if ep.api_key_ref.is_some() {
-            // Already migrated
             continue;
         }
         let env_name = match &ep.api_key_env {
@@ -255,7 +322,6 @@ fn migrate_endpoints_in_config(
         );
 
         if !no_copy {
-            // Check if the env var has a value we can copy
             if let Ok(env_value) = std::env::var(&env_name) {
                 if !env_value.is_empty() {
                     println!(

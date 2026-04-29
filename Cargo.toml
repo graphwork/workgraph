@@ -93,6 +93,7 @@ hex = "0.4.3"
 portable-pty = "0.9"
 vt100 = "0.16"
 tui-term = "0.3"
+keyring = { version = "3", default-features = false, features = ["apple-native", "windows-native", "sync-secret-service", "vendored"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
